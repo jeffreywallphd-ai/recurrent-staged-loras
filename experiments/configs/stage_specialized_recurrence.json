@@ -1,0 +1,30 @@
+{
+  "baseline": "stage_specialized_recurrence",
+  "model": {
+    "name": "example/base-instruct-model",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": false
+    },
+    "latent_refiner": {
+      "enabled": true,
+      "num_recurrent_steps": 3,
+      "recurrence_mode": "stage_specialized",
+      "adapter_sharing": "per_step",
+      "adapter": {
+        "enabled": true,
+        "rank": 8,
+        "alpha": 16,
+        "dropout": 0.0,
+        "target_modules": ["refiner_proj"]
+      }
+    },
+    "trainable_modules": ["latent_refiner", "refiner_adapter_step_0", "refiner_adapter_step_1", "refiner_adapter_step_2"]
+  },
+  "dataset": {
+    "name": "placeholder_dataset"
+  },
+  "output": {
+    "dir": "outputs/stage_specialized_recurrence"
+  }
+}

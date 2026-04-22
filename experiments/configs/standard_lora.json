@@ -1,0 +1,27 @@
+{
+  "baseline": "standard_lora",
+  "model": {
+    "name": "example/base-instruct-model",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": true,
+      "rank": 8,
+      "alpha": 16,
+      "dropout": 0.0,
+      "target_modules": ["q_proj", "v_proj"]
+    },
+    "latent_refiner": {
+      "enabled": false,
+      "num_recurrent_steps": 1,
+      "recurrence_mode": "none",
+      "adapter_sharing": "none"
+    },
+    "trainable_modules": ["standard_lora"]
+  },
+  "dataset": {
+    "name": "placeholder_dataset"
+  },
+  "output": {
+    "dir": "outputs/standard_lora"
+  }
+}

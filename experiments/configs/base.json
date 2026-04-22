@@ -1,0 +1,23 @@
+{
+  "baseline": "base",
+  "model": {
+    "name": "example/base-instruct-model",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": false
+    },
+    "latent_refiner": {
+      "enabled": false,
+      "num_recurrent_steps": 1,
+      "recurrence_mode": "none",
+      "adapter_sharing": "none"
+    },
+    "trainable_modules": []
+  },
+  "dataset": {
+    "name": "placeholder_dataset"
+  },
+  "output": {
+    "dir": "outputs/base"
+  }
+}
