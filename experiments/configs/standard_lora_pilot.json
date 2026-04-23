@@ -1,0 +1,63 @@
+{
+  "baseline": "standard_lora",
+  "model": {
+    "name": "Qwen/Qwen3-8B",
+    "tokenizer_name": "Qwen/Qwen3-8B",
+    "trust_remote_code": true,
+    "dtype": "bfloat16",
+    "device_map": "auto",
+    "max_seq_length": 4096,
+    "load_in_4bit": false,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": true,
+    "architecture_type": "dense",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": true,
+      "rank": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "up_proj",
+        "down_proj",
+        "gate_proj"
+      ]
+    },
+    "latent_refiner": {
+      "enabled": false,
+      "num_recurrent_steps": 1,
+      "recurrence_mode": "none",
+      "adapter_sharing": "none"
+    }
+  },
+  "dataset": {
+    "name": "metamath_qa",
+    "settings": {
+      "subset_size": 5000,
+      "eval_fraction": 0.1,
+      "seed": 11,
+      "cache_dir": "./.cache/hf_datasets",
+      "split": "train"
+    }
+  },
+  "training": {
+    "batch_size": 1,
+    "num_epochs": 1,
+    "max_steps": 100,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0,
+    "seed": 11,
+    "eval_interval_steps": 100,
+    "checkpoint_interval_steps": 100,
+    "eval_enabled": true,
+    "deterministic": false
+  },
+  "output": {
+    "dir": "outputs/standard_lora"
+  }
+}
