@@ -2,62 +2,51 @@
 
 Core scaffolding for a controlled empirical comparison of latent adaptation baselines on top of a frozen base language model.
 
-Current phase: establish modular interfaces, experiment configs, and baseline documentation for a controlled empirical comparison study.
+## Why this repo exists
 
-## Rationale
-
-This repository isolates adaptation choices while holding the base model, dataset protocol, and evaluation framing fixed. The goal is to make baseline-to-baseline comparisons explicit and reproducible before full training internals are implemented.
+This repository isolates adaptation choices while holding base model family, dataset protocol, and evaluation framing fixed. The objective is reproducible baseline-to-baseline comparison, not novelty claims.
 
 ## Baselines in scope
 
 1. Base
 2. Base + standard LoRA
 3. Base + latent refiner only
-4. Base + latent refiner + shared recurrence
-5. Base + latent refiner + stage-specialized recurrence
+4. Base + latent refiner + shared recurrence adapters
+5. Base + latent refiner + stage-specialized recurrence adapters
 
-Baseline templates live in `experiments/configs/` and are validated by lightweight smoke tests.
+Baseline templates live in `experiments/configs/`.
 
 ## Architecture path
 
-Planned composition for latent-refiner variants:
-
 **frozen base LM -> latent refiner -> LM head**
 
-The latent refiner path can be configured with no adapters, shared recurrence adapters, or stage-specialized recurrence adapters.
+The latent refiner path is configurable for:
+- recurrence with no adapters (`latent_refiner_only`),
+- recurrence with one shared adapter across steps (`shared_recurrence`),
+- recurrence with per-step adapters (`stage_specialized_recurrence`).
 
-## Status (scaffold-only)
+## Current status
 
-This version is intentionally scaffold-focused:
+This version is implementation-oriented scaffold code:
+- baseline definitions and config semantics,
+- model composition and forward smoke path,
+- config parsing and baseline selection,
+- run metadata plumbing and lightweight tests.
 
-- baseline definitions and naming discipline,
-- config wiring and baseline selection,
-- run metadata plumbing,
-- lightweight smoke coverage.
+Still deferred:
+- full optimizer/scheduler/trainer loop sophistication,
+- production-grade external LoRA backend integration,
+- full benchmark reporting.
 
-It does **not** yet implement the full latent refiner internals, full adapter backends, or full training loop behavior.
+## Reading order
 
-## Read next
+1. `docs/README.md`
+2. `docs/architecture.md`
+3. `docs/baselines.md`
+4. `docs/experiments.md`
 
-- `docs/README.md` for project framing and reading order.
-- `docs/architecture.md` for component layout and mode definitions.
-- `docs/baselines.md` for detailed baseline hypotheses.
-- `docs/experiments.md` for the experiment matrix and scaffold criteria.
-
-## Repository layout
-
-- `models/`: model wrapper interfaces and latent refiner composition.
-- `training/`: config loading, baseline selection, run metadata, training entrypoint scaffold.
-- `data/`: dataset plumbing placeholders.
-- `experiments/configs/`: baseline experiment templates.
-- `docs/`: architecture and empirical framing docs.
-- `scripts/`: convenience launch scripts.
-- `tests/`: minimal smoke tests for scaffolding.
-
-## Quick start (scaffold)
+## Quick start
 
 ```bash
 python -m training.train --config experiments/configs/base.json --run-name smoke_base
 ```
-
-This currently writes run metadata and validates config wiring. Full training implementation is intentionally deferred.

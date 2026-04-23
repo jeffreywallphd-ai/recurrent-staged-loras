@@ -9,10 +9,12 @@
     "latent_refiner": {
       "enabled": true,
       "num_recurrent_steps": 2,
-      "recurrence_mode": "shared",
+      "recurrence_mode": "latent_only",
       "adapter_sharing": "none"
     },
-    "trainable_modules": ["latent_refiner"]
+    "trainable_modules": [
+      "latent_refiner"
+    ]
   },
   "dataset": {
     "name": "placeholder_dataset"

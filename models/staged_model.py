@@ -48,4 +48,11 @@ class StagedLatentAdaptationModel:
             per_step = refiner_out.per_step_hidden_states
 
         logits = self.base_model.forward_lm_head(refined)
-        return ModelForwardOutput(logits=logits, refined_hidden_states=refined, extras={"per_step": per_step})
+        return ModelForwardOutput(
+            logits=logits,
+            refined_hidden_states=refined,
+            extras={
+                "per_step": per_step,
+                "base_metadata": base_out.metadata,
+            },
+        )
