@@ -126,3 +126,15 @@ For each group, mean/std are reported for:
    - `outputs/aggregates.json`: canonical aggregate plotting source.
    - `outputs/summary.json`: full machine-readable archive (run + aggregate + invocation context).
    - `outputs/summary.csv`: wide mixed export for quick spreadsheet inspection.
+
+## Statistical inference workflow (confirmatory vs descriptive)
+
+- **Primary confirmatory outcomes:** `final_answer_accuracy`, `final_answer_exact_match`, `normalized_numeric_answer_accuracy`.
+- **Planned confirmatory contrasts (within each architecture):**
+  - `stage_specialized_recurrence` vs `standard_lora`
+  - `stage_specialized_recurrence` vs `shared_recurrence`
+  - `stage_specialized_recurrence` vs `latent_refiner_only`
+- **Repeated-run unit:** run-level metrics with pairing by `seed` when overlap exists.
+- **Primary test:** paired Wilcoxon signed-rank per metric/contrast (paired t-test reported only as sensitivity context).
+- **Family-wise error control:** Holm correction across the full confirmatory family (all primary outcomes × all planned contrasts × both architectures).
+- **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.

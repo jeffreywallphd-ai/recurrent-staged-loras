@@ -21,6 +21,9 @@ Multi-seed orchestration writes:
 - `outputs/summary.csv` (run and aggregate rows)
 - `outputs/aggregates.json` (aggregate-only artifact)
 - `outputs/report_table.csv` (canonical paper/report table source with explicit run vs aggregate row typing)
+- `outputs/statistical_analysis_confirmatory.json` / `.csv` (confirmatory primary-outcome contrasts with Holm-adjusted p-values)
+- `outputs/statistical_analysis_secondary.json` and `outputs/statistical_analysis_efficiency.json` (separate descriptive families)
+- `outputs/statistical_analysis_report.md` (reviewer-facing inferential summary)
 
 ## Presets
 
@@ -42,3 +45,4 @@ python scripts/run_all_experiments.py --config-dir experiments/configs --seeds 1
 - `docs/baselines.md`
 - `docs/experiments.md`
 - `docs/study_matrix.md`
+- `analysis/README.md`
