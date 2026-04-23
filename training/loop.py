@@ -28,6 +28,7 @@ class EvalResult:
     answer_eval_string_count: int
     answer_eval_numeric_count: int
     answer_eval_skipped_no_stage3: int
+    answer_eval_skipped_no_answer_span: int
     answer_eval_skipped_missing_answer_text: int
     answer_eval_skipped_missing_numeric_target: int
 
@@ -156,6 +157,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     numeric_correct = numeric_total = 0
 
     skipped_no_stage3 = 0
+    skipped_no_answer_span = 0
     skipped_missing_answer_text = 0
     skipped_missing_numeric_target = 0
 
@@ -166,11 +168,13 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
             labels = batch["labels"][:, 1:]
             stage2_mask = batch["stage2_mask"][:, 1:]
             stage3_mask = batch["stage3_mask"][:, 1:]
+            final_answer_mask = batch["final_answer_mask"][:, 1:]
             assert isinstance(input_ids, torch.Tensor)
             assert isinstance(attention_mask, torch.Tensor)
             assert isinstance(labels, torch.Tensor)
             assert isinstance(stage2_mask, torch.Tensor)
             assert isinstance(stage3_mask, torch.Tensor)
+            assert isinstance(final_answer_mask, torch.Tensor)
 
             out = model(input_ids=input_ids, attention_mask=attention_mask)
             logits = out.logits[:, :-1, :]
@@ -195,7 +199,12 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                     skipped_no_stage3 += 1
                     continue
 
-                pred_answer = _decode_answer_tokens(pred[i][sample_mask], tokenizer)
+                answer_mask = final_answer_mask[i]
+                if int(answer_mask.sum().item()) == 0:
+                    skipped_no_answer_span += 1
+                    continue
+
+                pred_answer = _decode_answer_tokens(pred[i][answer_mask], tokenizer)
                 pred_norm = _normalize_text(pred_answer)
 
                 gold_raw = str(target_texts[i]).strip() if i < len(target_texts) else ""
@@ -240,6 +249,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         answer_eval_string_count=normalized_total,
         answer_eval_numeric_count=numeric_total,
         answer_eval_skipped_no_stage3=skipped_no_stage3,
+        answer_eval_skipped_no_answer_span=skipped_no_answer_span,
         answer_eval_skipped_missing_answer_text=skipped_missing_answer_text,
         answer_eval_skipped_missing_numeric_target=skipped_missing_numeric_target,
     )
@@ -321,6 +331,7 @@ def run_training(
         "answer_eval_string_count": int(last_eval.answer_eval_string_count),
         "answer_eval_numeric_count": int(last_eval.answer_eval_numeric_count),
         "answer_eval_skipped_no_stage3": int(last_eval.answer_eval_skipped_no_stage3),
+        "answer_eval_skipped_no_answer_span": int(last_eval.answer_eval_skipped_no_answer_span),
         "answer_eval_skipped_missing_answer_text": int(last_eval.answer_eval_skipped_missing_answer_text),
         "answer_eval_skipped_missing_numeric_target": int(last_eval.answer_eval_skipped_missing_numeric_target),
     }

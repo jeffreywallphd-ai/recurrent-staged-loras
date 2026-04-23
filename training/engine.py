@@ -174,12 +174,16 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "latent_cache": LATENT_CACHE_STATUS,
         "final_answer_accuracy": training_summary.get("final_answer_accuracy"),
         "final_answer_exact_match": training_summary.get("final_answer_exact_match"),
+        "answer_span_normalized_accuracy": training_summary.get("final_answer_accuracy"),
+        "answer_span_exact_match": training_summary.get("final_answer_exact_match"),
         "stage_3_token_accuracy": training_summary.get("stage_3_token_accuracy"),
         "stage_2_token_accuracy": training_summary.get("stage_2_token_accuracy"),
         "normalized_numeric_answer_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
+        "answer_span_numeric_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
         "answer_eval_string_count": int(training_summary.get("answer_eval_string_count", 0)),
         "answer_eval_numeric_count": int(training_summary.get("answer_eval_numeric_count", 0)),
         "answer_eval_skipped_no_stage3": int(training_summary.get("answer_eval_skipped_no_stage3", 0)),
+        "answer_eval_skipped_no_answer_span": int(training_summary.get("answer_eval_skipped_no_answer_span", 0)),
         "answer_eval_skipped_missing_answer_text": int(training_summary.get("answer_eval_skipped_missing_answer_text", 0)),
         "answer_eval_skipped_missing_numeric_target": int(training_summary.get("answer_eval_skipped_missing_numeric_target", 0)),
     }
@@ -189,9 +193,10 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "string_answer_scored": metrics["answer_eval_string_count"],
         "numeric_answer_scored": metrics["answer_eval_numeric_count"],
         "skipped_no_stage3": metrics["answer_eval_skipped_no_stage3"],
+        "skipped_no_answer_span": metrics["answer_eval_skipped_no_answer_span"],
         "skipped_missing_answer_text": metrics["answer_eval_skipped_missing_answer_text"],
         "skipped_missing_numeric_target": metrics["answer_eval_skipped_missing_numeric_target"],
-        "notes": "String metrics use normalized decoded stage-3 answers. Exact match uses strict raw string equality; numeric accuracy uses normalized floating-point extraction.",
+        "notes": "Answer metrics decode only tokens in final_answer_mask (answer span, excluding the literal 'Final Answer:' header). stage_3_token_accuracy still uses the full stage3_mask section.",
     }
     (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
 

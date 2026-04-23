@@ -16,6 +16,8 @@ DISPLAY_COLUMNS = [
     "config_name",
     "final_eval_loss",
     "eval_perplexity",
+    "stage_2_token_accuracy",
+    "stage_3_token_accuracy",
     "final_answer_accuracy",
     "final_answer_exact_match",
     "normalized_numeric_answer_accuracy",
@@ -39,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare metrics from multiple runs")
     parser.add_argument("metrics", nargs="*", help="Paths to run-level metrics.json files")
     parser.add_argument("--aggregates", nargs="*", default=[], help="Paths to aggregate artifact JSON files")
+    parser.add_argument("--view", choices=["all", "runs", "aggregates"], default="all")
     return parser.parse_args()
 
 
@@ -106,7 +109,7 @@ def main() -> None:
         if isinstance(metric, dict):
             run_rows.append({**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "path": str(path)})
 
-    if run_rows:
+    if run_rows and args.view in {"all", "runs"}:
         _print_table(run_rows, DISPLAY_COLUMNS)
 
     aggregate_rows: list[dict[str, object]] = []
@@ -115,7 +118,7 @@ def main() -> None:
         payload = _load(path)
         aggregate_rows.extend(_flatten_aggregates(payload, source=str(path)))
 
-    if aggregate_rows:
+    if aggregate_rows and args.view in {"all", "aggregates"}:
         print()
         print("Paper-style aggregate mean/std summary")
         _print_table(aggregate_rows, AGG_DISPLAY_COLUMNS)
