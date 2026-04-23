@@ -1,0 +1,23 @@
+{
+  "baseline": "latent_refiner_only",
+  "model": {
+    "name": "example/base-instruct-model",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": false
+    },
+    "latent_refiner": {
+      "enabled": true,
+      "num_recurrent_steps": 2,
+      "recurrence_mode": "shared",
+      "adapter_sharing": "none"
+    },
+    "trainable_modules": ["latent_refiner"]
+  },
+  "dataset": {
+    "name": "placeholder_dataset"
+  },
+  "output": {
+    "dir": "outputs/latent_refiner_only"
+  }
+}

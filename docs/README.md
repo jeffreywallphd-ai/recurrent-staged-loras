@@ -4,12 +4,13 @@ This repository is organized as a **controlled empirical comparison study** of l
 
 ## Purpose
 
-The project compares four baselines on the same base instruct model and dataset/task setup:
+The project compares five baselines on the same base instruct model and dataset/task setup:
 
 1. Base model (no adaptation)
 2. Base + standard LoRA
-3. Base + latent refiner with shared recurrence
-4. Base + latent refiner with stage-specialized recurrence
+3. Base + latent refiner only
+4. Base + latent refiner with shared recurrence
+5. Base + latent refiner with stage-specialized recurrence
 
 The immediate goal is to provide a clean implementation scaffold for these comparisons, not to introduce or claim a fundamentally novel architecture.
 

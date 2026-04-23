@@ -26,7 +26,7 @@ This placement supports controlled testing of latent adaptation without changing
   - Supports one-step behavior (no recurrence baseline path).
 
 - **Step-aware adapter bank** (`models/lora_bank.py`)
-  - Routes LoRA adapters by step index.
+  - Routes LoRA adapters by step index when adapterized recurrence is enabled.
   - Supports either shared recurrence or stage-specialized recurrence.
 
 - **Top-level composition** (`models/staged_model.py`)
@@ -36,9 +36,12 @@ This placement supports controlled testing of latent adaptation without changing
 ## Terminology and modes
 
 - **standard LoRA**: LoRA adaptation applied in the base model path (no latent refiner recurrence).
+- **latent refiner only**: latent refiner recurrence enabled without refiner adapters.
 - **shared recurrence**: recurrent latent refiner with one shared adapter reused across all steps.
 - **stage-specialized recurrence**: recurrent latent refiner with distinct adapter parameters for each step.
 - **latent refiner**: end-mounted latent-space module between base hidden states and LM head.
+
+In this scaffold, the latent refiner is intended to support three usage patterns: without adapters (`latent refiner only`), with shared recurrence adapters, and with stage-specialized adapters.
 
 ## Non-claims
 
