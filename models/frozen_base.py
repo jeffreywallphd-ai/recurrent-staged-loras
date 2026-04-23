@@ -1,4 +1,9 @@
-"""Frozen base causal language model wrapper with real HF + PEFT support."""
+"""Backbone wrapper for frozen-base experiments with optional PEFT LoRA.
+
+Provides a unified interface for:
+- real Hugging Face CausalLM backends (study path),
+- tiny internal deterministic backend (tests only).
+"""
 
 from __future__ import annotations
 
@@ -98,6 +103,11 @@ class FrozenBaseCausalLM(nn.Module):
                 p.requires_grad = False
 
     def enable_standard_lora(self, rank: int, alpha: int, dropout: float, target_modules: list[str]) -> None:
+        """Attach PEFT LoRA adapters to the HF backbone.
+
+        Raises:
+            RuntimeError: For test backend or uninitialized HF models.
+        """
         if self.standard_lora_enabled:
             return
         if self.internal_model is not None:

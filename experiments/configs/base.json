@@ -59,5 +59,9 @@
   },
   "output": {
     "dir": "outputs/base"
-  }
+  },
+  "run_notes": [
+    "reportable confirmatory baseline (dense)",
+    "frozen-base reference condition with no adapters or recurrence"
+  ]
 }

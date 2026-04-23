@@ -1,4 +1,13 @@
-"""Reusable training-loop primitives for baseline comparisons."""
+"""Core optimization/evaluation loop primitives used by `training.engine`.
+
+Responsibilities:
+- compute stage-aware training loss,
+- run bounded training epochs with optional compute ceilings,
+- compute answer-span-aware metrics for reportable outputs.
+
+Invariant: answer-level metrics are computed on `answer_mask` spans (not full
+stage-3 text), while token-level stage accuracy keeps stage-mask semantics.
+"""
 
 from __future__ import annotations
 
@@ -81,6 +90,11 @@ def _decode_answer_tokens(token_ids: torch.Tensor, tokenizer: Any | None) -> str
 
 
 def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Tensor | list[str]]) -> torch.Tensor:
+    """Compute one batch loss.
+
+    For recurrent models, per-step logits are aligned to stage masks (stage1-3)
+    so each recurrence step is supervised on its intended stage target.
+    """
     input_ids = batch["input_ids"]
     attention_mask = batch["attention_mask"]
     assert isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)
@@ -122,6 +136,11 @@ def train_epoch(
     max_train_tokens: int | None = None,
     max_wall_time_seconds: float | None = None,
 ) -> tuple[float, int, float, int, list[EvalResult]]:
+    """Run one epoch (or partial epoch) with optional eval intervals.
+
+    Returns:
+        (avg_train_loss, steps_done, wall_time_seconds, train_tokens_seen, interval_eval_results)
+    """
     model.train()
     step = global_step_start
     losses: list[float] = []
@@ -157,6 +176,11 @@ def train_epoch(
 
 
 def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[str, torch.Tensor | list[str]]], tokenizer: Any | None = None) -> EvalResult:
+    """Evaluate model on one dataloader and compute study metrics.
+
+    Failure modes:
+        Assumes masks and labels are present with expected keys/shapes.
+    """
     model.eval()
     start = perf_counter()
     losses: list[float] = []
@@ -229,6 +253,8 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                     skipped_no_stage3 += 1
                     continue
 
+                # Final-answer metrics intentionally score only the answer span,
+                # excluding literal headers like "Final Answer:".
                 sample_answer_mask = answer_mask[i]
                 if int(sample_answer_mask.sum().item()) == 0:
                     skipped_no_answer_span += 1
@@ -277,6 +303,8 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                         else:
                             symbolic_failure_count += 1
 
+                # Numeric scoring is only valid when a numeric target is present;
+                # missing/ambiguous targets are tracked as explicit skips.
                 if not gold_raw:
                     skipped_missing_numeric_target += 1
                     continue
@@ -365,6 +393,11 @@ def run_training(
     max_train_tokens: int | None = None,
     max_wall_time_seconds: float | None = None,
 ) -> dict[str, float | int]:
+    """Run multi-epoch training with step/token/time stopping criteria.
+
+    Side effects:
+        Mutates model parameters when optimizer is provided.
+    """
     run_start = perf_counter()
     global_steps = 0
     epochs_completed = 0
@@ -400,6 +433,8 @@ def run_training(
             break
 
     if eval_enabled:
+        # Guarantee a terminal eval snapshot unless the final optimizer step
+        # already produced one at an exact interval boundary.
         needs_final_eval = not eval_results or (eval_interval_steps <= 0 or global_steps % eval_interval_steps != 0)
         if needs_final_eval:
             eval_results.append(evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer))

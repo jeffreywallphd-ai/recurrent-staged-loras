@@ -1,4 +1,8 @@
-"""Recurrent latent refiner block placed between backbone and LM head."""
+"""Recurrent latent-state transformation module.
+
+Inserted between backbone hidden states and LM head projection; optionally
+augmented with step-aware adapters for shared/stage-specialized variants.
+"""
 
 from __future__ import annotations
 
@@ -38,11 +42,13 @@ class RecurrentLatentRefiner(nn.Module):
         self.step_scale = 0.5
 
     def step(self, hidden_states: torch.Tensor, step_idx: int) -> torch.Tensor:
+        """Apply one recurrent latent update step."""
         del step_idx
         delta = self.w_out(self.activation(self.w_in(hidden_states)))
         return hidden_states + self.step_scale * delta
 
     def forward(self, hidden_states: torch.Tensor) -> RefinerOutput:
+        """Run configured recurrent steps and collect per-step hidden states."""
         current = hidden_states
         history: list[torch.Tensor] = []
         for step_idx in range(self.num_steps):

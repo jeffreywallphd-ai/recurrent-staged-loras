@@ -1,4 +1,7 @@
-"""Utility to compare outcome and compute metrics across run and aggregate artifacts."""
+"""CLI for side-by-side inspection of run-level and aggregate metric artifacts.
+
+Intended for quick descriptive checks, not inferential statistics.
+"""
 
 from __future__ import annotations
 
@@ -80,6 +83,7 @@ def _print_table(rows: list[dict[str, object]], headers: list[str]) -> None:
 
 
 def _flatten_aggregates(payload: object, source: str) -> list[dict[str, object]]:
+    """Expand aggregate JSON payloads into table rows per metric."""
     if isinstance(payload, dict) and "aggregates" in payload:
         payload = payload["aggregates"]
     if not isinstance(payload, list):
@@ -108,6 +112,7 @@ def _flatten_aggregates(payload: object, source: str) -> list[dict[str, object]]
 
 
 def main() -> None:
+    """CLI entrypoint for textual metric comparison tables."""
     args = parse_args()
 
     run_rows = []
@@ -129,6 +134,8 @@ def main() -> None:
             if dataset_filter not in (None, "primary"):
                 payload = external.get(dataset_filter)
                 if isinstance(payload, dict):
+                    # Keep run identity columns but overwrite score columns with
+                    # dataset-specific external payload metrics.
                     run_rows.append(
                         {
                             **base_row,

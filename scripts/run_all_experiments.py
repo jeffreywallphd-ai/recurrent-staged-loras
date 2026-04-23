@@ -1,4 +1,8 @@
-"""Run multiple experiment configs sequentially and aggregate metrics."""
+"""Experiment orchestrator for multi-config, multi-seed study sweeps.
+
+This script enforces run-scope boundaries (confirmatory vs ablation), expands
+ablation grids, and writes aggregate/report tables consumed by analysis docs.
+"""
 
 from __future__ import annotations
 
@@ -60,6 +64,7 @@ def _collect_config_paths(configs: list[str], config_dir: str | None) -> list[Pa
 
 
 def _filter_config_paths(paths: list[Path], preset_scope: str) -> list[Path]:
+    """Filter configs by study preset family (study/pilot/all)."""
     if preset_scope == "all":
         return paths
     if preset_scope == "pilot":
@@ -107,10 +112,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def _agg(rows: list[dict[str, object]]) -> dict[str, object]:
+    """Aggregate homogeneous runs into mean/std summaries.
+
+    Raises:
+        ValueError: if control fields are heterogeneous within a candidate group.
+    """
     out: dict[str, object] = {}
     for k in AGG_GROUP_BY_FIELDS:
         out[k] = rows[0].get(k)
     for field in AGGREGATION_CONTROL_FIELDS:
+        # Fail-fast: averaging across mixed control regimes invalidates summary.
         values = {_normalize_group_value(r.get(field)) for r in rows}
         if len(values) != 1:
             raise ValueError(f"Invalid aggregate group: heterogeneous '{field}' values detected: {sorted(values, key=str)}")
@@ -139,6 +150,7 @@ def _has_ablation_payload(raw: dict[str, Any]) -> bool:
 
 
 def _apply_rank_ablation(derived: dict[str, Any], rank: int) -> None:
+    """Apply rank ablation only to active adapter paths."""
     model = derived.setdefault("model", {})
     standard_lora = model.setdefault("standard_lora", {})
     latent_refiner = model.setdefault("latent_refiner", {})
@@ -154,6 +166,7 @@ def _apply_rank_ablation(derived: dict[str, Any], rank: int) -> None:
 
 
 def _apply_recurrent_step_ablation(derived: dict[str, Any], recurrent_steps: int) -> None:
+    """Apply recurrence-step ablation to enabled latent refiner configs only."""
     latent_refiner = derived.setdefault("model", {}).setdefault("latent_refiner", {})
     if not bool(latent_refiner.get("enabled", False)):
         raise ValueError("recurrent_steps ablation requested but latent_refiner.enabled is false")
@@ -161,6 +174,11 @@ def _apply_recurrent_step_ablation(derived: dict[str, Any], recurrent_steps: int
 
 
 def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, dict[str, Any], str]]:
+    """Expand one config into confirmatory or ablation-derived run payloads.
+
+    Invariant:
+        Ablation payloads are kept separate from confirmatory runs by scope.
+    """
     raw = load_experiment_config(config_path)
     has_ablation = _has_ablation_payload(raw)
     if run_scope == "confirmatory":
@@ -190,6 +208,8 @@ def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, d
         return [(config_path.name, only, "confirmatory")]
 
     if _is_pilot(config_path):
+        # Prevent accidental mixing of non-reportable pilot settings with
+        # ablation-derived names in study sweeps.
         raise ValueError("Ablations must not be attached to pilot configs to avoid silent mixing with confirmatory presets")
 
     rec_values = recurrent_steps if has_recurrent_axis else [None]
@@ -219,6 +239,7 @@ def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, d
 
 
 def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggregates: list[dict[str, object]]) -> None:
+    """Write report-ready table combining run rows and aggregate rows."""
     report_rows: list[dict[str, object]] = []
     for run in runs:
         report_rows.append({
@@ -263,6 +284,8 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
         for external_name, payload in dict(run.get("external_eval", {})).items():
             if not isinstance(payload, dict):
                 continue
+            # External rows overwrite dataset identity with external payload
+            # values so consumers do not inherit primary dataset identifiers.
             report_rows.append({
                 "row_type": "run",
                 "report_tier": "external_eval",
@@ -357,6 +380,7 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
 
 
 def main() -> None:
+    """CLI entrypoint for full experiment sweeps."""
     args = parse_args()
     raw_config_paths = _collect_config_paths(args.configs, args.config_dir)
     config_paths = _filter_config_paths(raw_config_paths, args.preset_scope)
@@ -374,6 +398,7 @@ def main() -> None:
             for seed in args.seeds:
                 runtime = load_runtime_config_from_raw(raw_cfg)
                 if args.run_scope == "confirmatory" and derived_scope != "confirmatory":
+                    # Guardrail against accidental confirmatory+ablation mixing.
                     raise ValueError("confirmatory run-scope cannot execute ablation-derived configs")
                 runtime.training.seed = seed
                 runtime.dataset["settings"]["seed"] = seed

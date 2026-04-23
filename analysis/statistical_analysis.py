@@ -1,4 +1,14 @@
-"""Per-metric confirmatory and descriptive statistical analysis pipeline."""
+"""Confirmatory/descriptive statistics for experiment outputs.
+
+Pipeline role:
+- validates run identity + metric completeness assumptions,
+- builds planned baseline contrasts,
+- runs paired inferential tests for confirmatory primary outcomes,
+- emits descriptive secondary/efficiency summaries and report artifacts.
+
+Key invariant: paired confirmatory comparisons require matching dataset identity
+(`dataset_fingerprint` and `eval_sample_ids_hash`) for each paired seed.
+"""
 
 from __future__ import annotations
 
@@ -71,6 +81,7 @@ def _coerce_float(value: object) -> float | None:
 
 
 def _validate_runs(runs: list[dict[str, object]]) -> None:
+    """Validate required identifier and metric availability constraints."""
     for idx, row in enumerate(runs):
         for required in REQUIRED_ID_COLUMNS:
             if row.get(required) in (None, ""):
@@ -97,6 +108,7 @@ def _require_confirmatory_purity(
     allow_pilot_runs_in_analysis: bool,
     allow_external_in_confirmatory: bool,
 ) -> None:
+    """Reject non-confirmatory rows unless explicit overrides are provided."""
     if not allow_ablations_in_analysis:
         ablation_runs = [r for r in runs if _is_ablation_row(r)]
         if ablation_runs:
@@ -175,6 +187,7 @@ def _require_homogeneous_family(
     baseline_a: str,
     baseline_b: str,
 ) -> tuple[ConditionFamilyKey, dict[int, dict[str, object]], dict[int, dict[str, object]]]:
+    """Require exactly one comparable (model,dataset) family per baseline."""
     families_a = _extract_condition_families(grouped, architecture_type, baseline_a)
     families_b = _extract_condition_families(grouped, architecture_type, baseline_b)
 
@@ -295,6 +308,10 @@ def _compare_metric(
     allow_unpaired: bool,
     primary: bool,
 ) -> dict[str, object]:
+    """Compare one metric for one planned contrast.
+
+    Returns a row compatible with confirmatory/secondary output artifacts.
+    """
     (family, rows_a, rows_b) = _require_homogeneous_family(
         grouped=grouped,
         architecture_type=architecture_type,
@@ -356,6 +373,8 @@ def _compare_metric(
         fp_b = rows_b[seed].get("dataset_fingerprint")
         eval_hash_a = rows_a[seed].get("eval_sample_ids_hash")
         eval_hash_b = rows_b[seed].get("eval_sample_ids_hash")
+        # Dataset identity must match across paired seeds. Without this, paired
+        # inferential tests would compare different evaluation cohorts.
         if fp_a != fp_b or eval_hash_a != eval_hash_b:
             scope = "external" if (rows_a[seed].get("dataset_scope") == "external" or rows_b[seed].get("dataset_scope") == "external") else "primary"
             raise ValueError(
@@ -425,6 +444,7 @@ def run_analysis(
     allow_pilot_runs_in_analysis: bool = False,
     allow_external_in_confirmatory: bool = False,
 ) -> dict[str, object]:
+    """Run the full statistical pipeline and write analysis artifacts."""
     def _require_external_identity_fields(*, row: dict[str, object], row_label: str) -> None:
         missing = [field for field in EXTERNAL_IDENTITY_FIELDS if row.get(field) in (None, "")]
         if missing:
@@ -450,6 +470,8 @@ def run_analysis(
                     )
                 flattened = dict(row)
                 for field in EXTERNAL_IDENTITY_FIELDS:
+                    # External-analysis rows explicitly replace identity fields
+                    # with external payload values to avoid primary-dataset bleed.
                     flattened[field] = payload.get(field)
                 flattened["dataset_scope"] = "external"
                 flattened["analysis_tier_default"] = "descriptive"
@@ -495,6 +517,8 @@ def run_analysis(
     confirmatory_rows: list[dict[str, object]] = []
     confirmatory_enabled = dataset_scope in {"primary", "all"}
     if confirmatory_enabled:
+        # Confirmatory inference is primary-dataset scoped by default; external
+        # datasets remain descriptive unless explicitly opted in.
         _require_confirmatory_purity(
             primary_rows,
             allow_ablations_in_analysis=allow_ablations_in_analysis,
