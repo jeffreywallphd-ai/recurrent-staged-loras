@@ -84,19 +84,27 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     model = build_model_from_variant(runtime.variant)
     model.train()
 
+    dataset_name = str(runtime.dataset["name"]).strip().lower()
+    external_names = [str(item.get("name", "")).strip().lower() for item in runtime.dataset.get("external_evaluations", []) if isinstance(item, dict)]
+    requires_tokenizer = dataset_name in {"metamath_qa"} or any(name in {"gsm8k", "math", "svamp"} for name in external_names)
     tokenizer = None
-    if runtime.dataset["name"] == "metamath_qa":
+    if requires_tokenizer:
         from transformers import AutoTokenizer  # type: ignore
 
         tok_name = runtime.variant.base.tokenizer_name or runtime.variant.base.model_name
-        tokenizer = AutoTokenizer.from_pretrained(tok_name, trust_remote_code=runtime.variant.base.trust_remote_code)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(tok_name, trust_remote_code=runtime.variant.base.trust_remote_code)
+        except Exception as exc:  # pragma: no cover - backend/network dependent
+            raise ValueError(f"Failed to initialize tokenizer '{tok_name}' required by configured datasets") from exc
+    if requires_tokenizer and tokenizer is None:
+        raise ValueError("Tokenizer is required by configured primary/external datasets but was not initialized")
 
     dataset_settings = dict(runtime.dataset.get("settings", {}))
     dataset_settings["seed"] = runtime.training.seed
     dataset_settings["max_seq_length"] = runtime.variant.base.max_seq_length
 
     bundle = build_train_eval_datasets(
-        name=runtime.dataset["name"],
+        name=dataset_name,
         settings=dataset_settings,
         vocab_size=model.base_model.vocab_size,
         tokenizer=tokenizer,
@@ -198,6 +206,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "run_name": run_name,
         "config_name": config_name,
         "baseline_name": runtime.baseline,
+        "baseline_family": runtime.raw.get("baseline_family", runtime.baseline),
+        "run_scope": runtime.raw.get("run_scope", "confirmatory"),
         "dataset_name": runtime.dataset["name"],
         "dataset_train_examples": len(components.train_loader.dataset),
         "dataset_eval_examples": len(components.eval_loader.dataset),

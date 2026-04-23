@@ -4,6 +4,8 @@ RUN_METRICS_FIELDS = [
     "run_name",
     "config_name",
     "baseline_name",
+    "baseline_family",
+    "run_scope",
     "dataset_name",
     "dataset_train_examples",
     "dataset_eval_examples",
@@ -78,7 +80,7 @@ RUN_METRICS_FIELDS = [
     "latent_cache",
 ]
 
-AGG_GROUP_BY_FIELDS = ["baseline_name", "architecture_type", "model_name", "dataset_name", "config_name"]
+AGG_GROUP_BY_FIELDS = ["baseline_name", "baseline_family", "run_scope", "architecture_type", "model_name", "dataset_name", "config_name"]
 AGGREGATE_METRICS = [
     "final_eval_loss",
     "eval_perplexity",
@@ -103,6 +105,7 @@ REPORT_TABLE_FIELDS = [
     "baseline_family",
     "dataset_name",
     "dataset",
+    "run_scope",
     "seed",
     "architecture_type",
     "model_name",

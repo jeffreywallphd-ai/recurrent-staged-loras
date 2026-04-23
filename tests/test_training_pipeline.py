@@ -12,6 +12,7 @@ from training.config_loader import RuntimeConfig, TrainingConfig, load_runtime_c
 from training.engine import build_training_components, run_training_loop
 from training.loop import evaluate, run_training
 from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
+from scripts.run_all_experiments import _build_ablation_runs
 
 
 def _runtime(tmp_path: Path, baseline: str = "stage_specialized_recurrence") -> RuntimeConfig:
@@ -419,3 +420,139 @@ def test_ablation_config_expansion_in_run_script(tmp_path: Path) -> None:
     assert len(summary["runs"]) == 4
     assert all(run.get("ablation_recurrent_steps") in [1, 2] for run in summary["runs"])
     assert all(run.get("ablation_lora_rank") in [4, 8] for run in summary["runs"])
+
+
+def test_lora_rank_ablation_routes_to_standard_lora(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "std.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "standard_lora",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": True, "rank": 4}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+                "ablations": {"lora_rank": [8]},
+            }
+        )
+    )
+    runs = _build_ablation_runs(cfg_path, run_scope="all")
+    assert runs[0][1]["model"]["standard_lora"]["rank"] == 8
+
+
+def test_lora_rank_ablation_routes_to_refiner_adapter(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "ref.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}}},
+                "ablations": {"lora_rank": [8]},
+            }
+        )
+    )
+    runs = _build_ablation_runs(cfg_path, run_scope="all")
+    assert runs[0][1]["model"]["latent_refiner"]["adapter"]["rank"] == 8
+
+
+def test_lora_rank_ablation_fails_without_adapters(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "base.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "base",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+                "ablations": {"lora_rank": [8]},
+            }
+        )
+    )
+    import pytest
+    with pytest.raises(ValueError, match="lora_rank ablation requested but no active adapter found"):
+        _build_ablation_runs(cfg_path, run_scope="all")
+
+
+def test_recurrent_step_ablation_requires_refiner(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "no_refiner.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "standard_lora",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": True}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+                "ablations": {"recurrent_steps": [2]},
+            }
+        )
+    )
+    import pytest
+    with pytest.raises(ValueError, match="recurrent_steps ablation requested but latent_refiner.enabled is false"):
+        _build_ablation_runs(cfg_path, run_scope="all")
+
+
+def test_run_scope_filters_ablation_and_confirmatory(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "mix.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}}},
+                "ablations": {"recurrent_steps": [1, 2], "lora_rank": [4]},
+            }
+        )
+    )
+    assert _build_ablation_runs(cfg_path, run_scope="confirmatory") == []
+    ablation = _build_ablation_runs(cfg_path, run_scope="ablation")
+    assert ablation and all(scope == "ablation" for _name, _raw, scope in ablation)
+    all_runs = _build_ablation_runs(cfg_path, run_scope="all")
+    assert len(all_runs) == len(ablation)
+
+
+def test_baseline_family_preserved_for_recurrence_ablations(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "family.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}}},
+                "ablations": {"recurrent_steps": [3], "lora_rank": [8]},
+            }
+        )
+    )
+    runs = _build_ablation_runs(cfg_path, run_scope="all")
+    name, raw, _scope = runs[0]
+    assert name.endswith("__r3_rank8.json")
+    assert raw["baseline"] == "stage_specialized_recurrence_r3_rank8"
+    assert raw["baseline_family"] == "stage_specialized_recurrence"
+
+
+def test_tokenizer_initialized_when_external_eval_requires_it(tmp_path: Path, monkeypatch) -> None:
+    class _FakeTokenizer:
+        pad_token_id = 0
+        eos_token_id = 0
+        pad_token = "<pad>"
+
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *_args, **_kwargs: _FakeTokenizer())
+
+    def _fake_external_dataset(*, name, settings, tokenizer):
+        assert tokenizer is not None
+        from data.dataset import DatasetBundle, SequenceDataset
+        ex = {
+            "input_ids": torch.tensor([1, 2], dtype=torch.long),
+            "labels": torch.tensor([1, 2], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "final_answer_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "answer_text": "2",
+            "answer_text_normalized": "2",
+            "source_signature": "x",
+        }
+        return DatasetBundle(train=SequenceDataset([ex]), eval=SequenceDataset([ex]), preprocessing_summary={"ok": 1})
+
+    monkeypatch.setattr("training.engine.build_external_eval_dataset", _fake_external_dataset)
+    runtime = load_runtime_config_from_raw(
+        {
+            "baseline": "base",
+            "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+            "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 8, "sequence_length": 6}, "external_evaluations": [{"name": "gsm8k", "subset_size": 1}]},
+            "training": {"batch_size": 1, "num_epochs": 1, "max_steps": 1},
+        }
+    )
+    components = build_training_components(runtime)
+    assert components.tokenizer is not None

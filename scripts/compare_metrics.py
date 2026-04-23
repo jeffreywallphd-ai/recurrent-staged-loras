@@ -26,6 +26,8 @@ DISPLAY_COLUMNS = [
     "trainable_param_fraction",
     "wall_time_seconds_total",
     "tokens_per_second_train",
+    "dataset",
+    "report_tier",
     "path",
 ]
 
@@ -120,11 +122,26 @@ def main() -> None:
             if args.ablation_lora_rank is not None and int(metric.get("ablation_lora_rank") or -1) != args.ablation_lora_rank:
                 continue
             dataset_filter = args.dataset
-            if dataset_filter and dataset_filter != "primary":
-                external = dict(metric.get("external_eval", {}))
-                if dataset_filter not in external:
-                    continue
-            run_rows.append({**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "path": str(path)})
+            base_row = {**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "dataset": "primary", "report_tier": "primary_run", "path": str(path)}
+            external = dict(metric.get("external_eval", {}))
+            if dataset_filter in (None, "primary"):
+                run_rows.append(base_row)
+            if dataset_filter not in (None, "primary"):
+                payload = external.get(dataset_filter)
+                if isinstance(payload, dict):
+                    run_rows.append(
+                        {
+                            **base_row,
+                            "dataset": dataset_filter,
+                            "report_tier": "external_eval",
+                            "final_eval_loss": payload.get("eval_loss"),
+                            "stage_2_token_accuracy": payload.get("stage_2_token_accuracy"),
+                            "stage_3_token_accuracy": payload.get("stage_3_token_accuracy"),
+                            "final_answer_accuracy": payload.get("final_answer_accuracy"),
+                            "final_answer_exact_match": payload.get("final_answer_exact_match"),
+                            "normalized_numeric_answer_accuracy": payload.get("normalized_numeric_answer_accuracy"),
+                        }
+                    )
 
     if run_rows and args.view in {"all", "runs"}:
         _print_table(run_rows, DISPLAY_COLUMNS)

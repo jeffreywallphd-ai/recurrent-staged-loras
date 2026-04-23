@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
-from training.config_loader import load_experiment_config, load_runtime_config, load_runtime_config_from_raw
+from training.config_loader import load_experiment_config, load_runtime_config_from_raw
 from training.engine import build_training_components, run_training_loop
 from training.metrics_schema import AGG_GROUP_BY_FIELDS, AGGREGATE_METRICS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 
@@ -53,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-dir", default=None)
     parser.add_argument("--seeds", nargs="*", type=int, default=[11, 22, 33])
     parser.add_argument("--preset-scope", choices=["study", "pilot", "all"], default="study")
+    parser.add_argument("--run-scope", choices=["confirmatory", "ablation", "all"], default="confirmatory")
     return parser.parse_args()
 
 
@@ -77,29 +78,77 @@ def _group_key(row: dict[str, object]) -> tuple[str, ...]:
     return tuple(str(row.get(key, "")) for key in AGG_GROUP_BY_FIELDS)
 
 
-def _build_ablation_runs(config_path: Path) -> list[tuple[str, dict[str, Any]]]:
+def _has_ablation_payload(raw: dict[str, Any]) -> bool:
+    ablations = raw.get("ablations", {})
+    if not isinstance(ablations, dict):
+        raise ValueError("ablations must be an object when provided")
+    return bool(ablations.get("recurrent_steps") or ablations.get("lora_rank"))
+
+
+def _apply_rank_ablation(derived: dict[str, Any], rank: int) -> None:
+    model = derived.setdefault("model", {})
+    standard_lora = model.setdefault("standard_lora", {})
+    latent_refiner = model.setdefault("latent_refiner", {})
+    refiner_adapter = latent_refiner.setdefault("adapter", {})
+    standard_enabled = bool(standard_lora.get("enabled", False))
+    refiner_adapter_enabled = bool(refiner_adapter.get("enabled", False))
+    if not standard_enabled and not refiner_adapter_enabled:
+        raise ValueError("lora_rank ablation requested but no active adapter found")
+    if standard_enabled:
+        standard_lora["rank"] = int(rank)
+    if refiner_adapter_enabled:
+        refiner_adapter["rank"] = int(rank)
+
+
+def _apply_recurrent_step_ablation(derived: dict[str, Any], recurrent_steps: int) -> None:
+    latent_refiner = derived.setdefault("model", {}).setdefault("latent_refiner", {})
+    if not bool(latent_refiner.get("enabled", False)):
+        raise ValueError("recurrent_steps ablation requested but latent_refiner.enabled is false")
+    latent_refiner["num_recurrent_steps"] = int(recurrent_steps)
+
+
+def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, dict[str, Any], str]]:
     raw = load_experiment_config(config_path)
+    has_ablation = _has_ablation_payload(raw)
+    if run_scope == "confirmatory":
+        if has_ablation:
+            return []
+        confirmatory = json.loads(json.dumps(raw))
+        confirmatory["run_scope"] = "confirmatory"
+        confirmatory["baseline_family"] = str(raw["baseline"])
+        return [(config_path.name, confirmatory, "confirmatory")]
+
+    if run_scope == "ablation" and not has_ablation:
+        return []
+
     ablations = dict(raw.get("ablations", {}))
     recurrent_steps = list(ablations.get("recurrent_steps", []))
     lora_ranks = list(ablations.get("lora_rank", []))
     if not recurrent_steps and not lora_ranks:
-        return [(config_path.name, raw)]
+        only = json.loads(json.dumps(raw))
+        only["run_scope"] = "confirmatory"
+        only["baseline_family"] = str(raw["baseline"])
+        return [(config_path.name, only, "confirmatory")]
 
     if _is_pilot(config_path):
         raise ValueError("Ablations must not be attached to pilot configs to avoid silent mixing with confirmatory presets")
 
     rec_values = recurrent_steps or [int(raw.get("model", {}).get("latent_refiner", {}).get("num_recurrent_steps", 1))]
-    rank_values = lora_ranks or [int(raw.get("model", {}).get("latent_refiner", {}).get("adapter", {}).get("rank", 8))]
-    expanded: list[tuple[str, dict[str, Any]]] = []
+    rank_values = lora_ranks or [
+        int(raw.get("model", {}).get("standard_lora", {}).get("rank", raw.get("model", {}).get("latent_refiner", {}).get("adapter", {}).get("rank", 8)))
+    ]
+    expanded: list[tuple[str, dict[str, Any], str]] = []
     for rec, rank in product(rec_values, rank_values):
         derived = json.loads(json.dumps(raw))
-        derived.setdefault("model", {}).setdefault("latent_refiner", {})["num_recurrent_steps"] = int(rec)
-        derived.setdefault("model", {}).setdefault("latent_refiner", {}).setdefault("adapter", {})["rank"] = int(rank)
+        _apply_recurrent_step_ablation(derived, int(rec))
+        _apply_rank_ablation(derived, int(rank))
         derived_baseline = f"{raw['baseline']}_r{int(rec)}_rank{int(rank)}"
         derived["baseline"] = derived_baseline
+        derived["baseline_family"] = str(raw["baseline"])
+        derived["run_scope"] = "ablation"
         derived["ablation"] = {"recurrent_steps": int(rec), "lora_rank": int(rank)}
         derived_name = f"{config_path.stem}__r{int(rec)}_rank{int(rank)}.json"
-        expanded.append((derived_name, derived))
+        expanded.append((derived_name, derived, "ablation"))
     return expanded
 
 
@@ -112,9 +161,10 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "run_name": run.get("run_name"),
             "config_name": run.get("config_name"),
             "baseline_name": run.get("baseline_name"),
-            "baseline_family": str(run.get("baseline_name", "")).split("_r", 1)[0],
+            "baseline_family": run.get("baseline_family") or run.get("baseline_name"),
             "dataset_name": run.get("dataset_name"),
             "dataset": "primary",
+            "run_scope": run.get("run_scope"),
             "seed": run.get("seed"),
             "architecture_type": run.get("architecture_type"),
             "model_name": run.get("model_name"),
@@ -142,9 +192,10 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
                 "run_name": run.get("run_name"),
                 "config_name": run.get("config_name"),
                 "baseline_name": run.get("baseline_name"),
-                "baseline_family": str(run.get("baseline_name", "")).split("_r", 1)[0],
+                "baseline_family": run.get("baseline_family") or run.get("baseline_name"),
                 "dataset_name": run.get("dataset_name"),
                 "dataset": external_name,
+                "run_scope": run.get("run_scope"),
                 "seed": run.get("seed"),
                 "architecture_type": run.get("architecture_type"),
                 "model_name": run.get("model_name"),
@@ -167,9 +218,10 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "report_tier": "primary_aggregate",
             "config_name": agg.get("config_name"),
             "baseline_name": agg.get("baseline_name"),
-            "baseline_family": agg.get("baseline_name"),
+            "baseline_family": agg.get("baseline_family") or agg.get("baseline_name"),
             "dataset_name": agg.get("dataset_name"),
             "dataset": "primary",
+            "run_scope": agg.get("run_scope"),
             "architecture_type": agg.get("architecture_type"),
             "model_name": agg.get("model_name"),
             "num_runs": agg.get("num_runs"),
@@ -210,10 +262,12 @@ def main() -> None:
 
     runs: list[dict[str, object]] = []
     for config_path in config_paths:
-        variants = _build_ablation_runs(config_path)
-        for derived_name, raw_cfg in variants:
+        variants = _build_ablation_runs(config_path, args.run_scope)
+        for derived_name, raw_cfg, derived_scope in variants:
             for seed in args.seeds:
                 runtime = load_runtime_config_from_raw(raw_cfg)
+                if args.run_scope == "confirmatory" and derived_scope != "confirmatory":
+                    raise ValueError("confirmatory run-scope cannot execute ablation-derived configs")
                 runtime.training.seed = seed
                 runtime.dataset["settings"]["seed"] = seed
                 runtime.output["dir"] = str(Path("outputs") / runtime.baseline)
@@ -238,6 +292,7 @@ def main() -> None:
         json.dumps(
             {
                 "preset_scope": args.preset_scope,
+                "run_scope": args.run_scope,
                 "config_paths": [str(p) for p in config_paths],
                 "runs": runs,
                 "aggregates": aggregates,

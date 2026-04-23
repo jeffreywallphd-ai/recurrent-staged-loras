@@ -36,6 +36,7 @@ Optional external evaluation datasets can be configured with:
 ```
 
 External evaluation is opt-in only. When enabled, each dataset is evaluated after primary eval and written under `external_eval.<dataset>.*` in `metrics.json`.
+External eval rows are descriptive-only by default, are labeled `report_tier=external_eval`, and are excluded from aggregate confirmatory metrics.
 
 Each sample is converted into a staged sequence:
 
@@ -88,7 +89,7 @@ Limitations:
 ## Canonical run-level metrics schema (`metrics.json`)
 
 Official fields:
-`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `symbolic_answer_accuracy`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_multi_value_exact_set_match_count`, `answer_eval_multi_value_partial_match_count`, `answer_eval_multi_value_unmatched_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `symbolic_eval_attempt_count`, `symbolic_eval_success_count`, `symbolic_eval_failure_count`, `answer_eval_symbolic_match_count`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
+`run_name`, `config_name`, `baseline_name`, `baseline_family`, `run_scope`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `symbolic_answer_accuracy`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_multi_value_exact_set_match_count`, `answer_eval_multi_value_partial_match_count`, `answer_eval_multi_value_unmatched_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `symbolic_eval_attempt_count`, `symbolic_eval_success_count`, `symbolic_eval_failure_count`, `answer_eval_symbolic_match_count`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `compute_control_enabled`, `compute_control_mode`, `adjusted_max_steps`, `ablation_recurrent_steps`, `ablation_lora_rank`, `external_eval`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
 
 Each run also writes `answer_eval_diagnostics.json` with answer-scoring counts and skip reasons.
 
@@ -132,11 +133,21 @@ Config:
 }
 ```
 
-`scripts/run_all_experiments.py` expands full combinations, applies overrides to:
-- `model.latent_refiner.num_recurrent_steps`
-- `model.latent_refiner.adapter.rank`
+`scripts/run_all_experiments.py` expands full combinations with strict compatibility checks:
+- `ablations.recurrent_steps` is valid only when `model.latent_refiner.enabled=true`.
+- `ablations.lora_rank` is routed to active adapters only:
+  - `model.standard_lora.rank` when `standard_lora.enabled=true`
+  - `model.latent_refiner.adapter.rank` when `latent_refiner.adapter.enabled=true`
+  - both when both adapters are active
+  - hard error when neither adapter is active (`lora_rank ablation requested but no active adapter found`).
 
-Derived run names append `_r{steps}_rank{rank}` and metrics include `ablation_recurrent_steps` and `ablation_lora_rank`. Baseline confirmatory runs remain separate from ablation runs by default.
+Run-scope controls:
+- `--run-scope confirmatory` (default): excludes configs with ablations.
+- `--run-scope ablation`: runs only ablation-derived configs.
+- `--run-scope all`: includes both.
+
+Derived run names append `_r{steps}_rank{rank}` and metrics include `ablation_recurrent_steps` and `ablation_lora_rank`.
+Naming is explicit: `baseline_name` keeps full derived name, while `baseline_family` is the original pre-ablation baseline.
 
 ## Multi-seed aggregation protocol
 
