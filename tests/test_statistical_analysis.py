@@ -89,6 +89,26 @@ def _build_complete_matrix(*, seeds: list[int]) -> list[dict[str, object]]:
     return runs
 
 
+def _external_payload(*, dataset_name: str, seed: int, fingerprint_suffix: str = "") -> dict[str, object]:
+    return {
+        "dataset_name": dataset_name,
+        "dataset_type": "external",
+        "dataset_split": "test",
+        "dataset_seed": seed,
+        "dataset_subset_size": 100,
+        "dataset_eval_fraction": 0.0,
+        "dataset_fingerprint": f"external-fp-{dataset_name}-{seed}{fingerprint_suffix}",
+        "train_sample_ids_hash": f"external-train-{dataset_name}-{seed}",
+        "eval_sample_ids_hash": f"external-eval-{dataset_name}-{seed}",
+        "eval_loss": 1.2,
+        "stage_2_token_accuracy": 0.3,
+        "stage_3_token_accuracy": 0.4,
+        "final_answer_accuracy": 0.5,
+        "final_answer_exact_match": 0.45,
+        "normalized_numeric_answer_accuracy": 0.47,
+    }
+
+
 def test_grouping_key_keeps_config_dataset_model_identity() -> None:
     runs = [
         _make_run(arch="dense", baseline="standard_lora", seed=11, offset=0.0, config_name="dense_standard_lora.json"),
@@ -225,16 +245,7 @@ def test_statistical_filters_support_compute_control_and_ablation(tmp_path: Path
 def test_external_dataset_scope_supports_flattened_analysis(tmp_path: Path) -> None:
     runs = _build_complete_matrix(seeds=[11, 22, 33])
     for row in runs:
-        row["external_eval"] = {
-            "gsm8k": {
-                "eval_loss": 1.2,
-                "stage_2_token_accuracy": 0.3,
-                "stage_3_token_accuracy": 0.4,
-                "final_answer_accuracy": 0.5,
-                "final_answer_exact_match": 0.45,
-                "normalized_numeric_answer_accuracy": 0.47,
-            }
-        }
+        row["external_eval"] = {"gsm8k": _external_payload(dataset_name="gsm8k", seed=int(row["seed"]))}
     summary = _write_summary(tmp_path, runs)
     out_dir = tmp_path / "outputs"
     result = run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False, dataset_scope="external")
@@ -248,16 +259,7 @@ def test_external_dataset_scope_supports_flattened_analysis(tmp_path: Path) -> N
 def test_dataset_scope_all_keeps_primary_confirmatory(tmp_path: Path) -> None:
     runs = _build_complete_matrix(seeds=[11, 22, 33])
     for row in runs:
-        row["external_eval"] = {
-            "gsm8k": {
-                "eval_loss": 1.2,
-                "stage_2_token_accuracy": 0.3,
-                "stage_3_token_accuracy": 0.4,
-                "final_answer_accuracy": 0.5,
-                "final_answer_exact_match": 0.45,
-                "normalized_numeric_answer_accuracy": 0.47,
-            }
-        }
+        row["external_eval"] = {"gsm8k": _external_payload(dataset_name="gsm8k", seed=int(row["seed"]))}
     summary = _write_summary(tmp_path, runs)
     out_dir = tmp_path / "outputs"
     run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False, dataset_scope="all")
@@ -300,3 +302,51 @@ def test_confirmatory_missing_metric_in_pair_fails(tmp_path: Path) -> None:
     summary = _write_summary(tmp_path, runs)
     with pytest.raises(ValueError, match="partial metric missingness"):
         run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_external_flattening_overwrites_primary_dataset_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        row["external_eval"] = {"gsm8k": _external_payload(dataset_name="gsm8k", seed=int(row["seed"]))}
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    captured_external_rows: list[dict[str, object]] = []
+    original_group_runs = _group_runs
+
+    def _capture_group_runs(rows: list[dict[str, object]]):
+        if rows and all(r.get("dataset_scope") == "external" for r in rows):
+            captured_external_rows.extend(rows)
+        return original_group_runs(rows)
+
+    monkeypatch.setattr("analysis.statistical_analysis._group_runs", _capture_group_runs)
+    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False, dataset_scope="external")
+    assert captured_external_rows
+    for row in captured_external_rows:
+        assert row["dataset_name"] == "gsm8k"
+        assert row["dataset_type"] == "external"
+        assert row["dataset_scope"] == "external"
+        assert str(row["dataset_fingerprint"]).startswith("external-fp-gsm8k-")
+        assert str(row["eval_sample_ids_hash"]).startswith("external-eval-gsm8k-")
+
+
+def test_external_scope_requires_identity_fields(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        bad_payload = _external_payload(dataset_name="gsm8k", seed=int(row["seed"]))
+        bad_payload.pop("dataset_fingerprint")
+        row["external_eval"] = {"gsm8k": bad_payload}
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="missing required identity fields"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False, dataset_scope="external")
+
+
+def test_external_paired_identity_mismatch_fails(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        payload = _external_payload(dataset_name="gsm8k", seed=int(row["seed"]))
+        if row["architecture_type"] == "dense" and row["baseline_name"] == "standard_lora" and row["seed"] == 11:
+            payload["dataset_fingerprint"] = "external-fp-mismatch"
+        row["external_eval"] = {"gsm8k": payload}
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="external scope: dataset identity mismatch"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False, dataset_scope="external")

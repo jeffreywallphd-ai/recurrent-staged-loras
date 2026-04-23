@@ -122,6 +122,17 @@ def _require_confirmatory_purity(
 
 ConditionSeedKey = tuple[str, str, str, str, str, int]
 ConditionFamilyKey = tuple[str, str, str, str]
+EXTERNAL_IDENTITY_FIELDS = [
+    "dataset_name",
+    "dataset_type",
+    "dataset_split",
+    "dataset_seed",
+    "dataset_subset_size",
+    "dataset_eval_fraction",
+    "dataset_fingerprint",
+    "train_sample_ids_hash",
+    "eval_sample_ids_hash",
+]
 
 
 def _group_runs(runs: list[dict[str, object]]) -> dict[ConditionSeedKey, dict[str, object]]:
@@ -346,8 +357,9 @@ def _compare_metric(
         eval_hash_a = rows_a[seed].get("eval_sample_ids_hash")
         eval_hash_b = rows_b[seed].get("eval_sample_ids_hash")
         if fp_a != fp_b or eval_hash_a != eval_hash_b:
+            scope = "external" if (rows_a[seed].get("dataset_scope") == "external" or rows_b[seed].get("dataset_scope") == "external") else "primary"
             raise ValueError(
-                "Paired runs are not comparable: dataset identity mismatch for "
+                f"Paired runs are not comparable in {scope} scope: dataset identity mismatch for "
                 f"{architecture_type}: {baseline_a} vs {baseline_b}, seed={seed}. "
                 f"dataset_fingerprint ({fp_a} vs {fp_b}), eval_sample_ids_hash ({eval_hash_a} vs {eval_hash_b})."
             )
@@ -413,6 +425,11 @@ def run_analysis(
     allow_pilot_runs_in_analysis: bool = False,
     allow_external_in_confirmatory: bool = False,
 ) -> dict[str, object]:
+    def _require_external_identity_fields(*, row: dict[str, object], row_label: str) -> None:
+        missing = [field for field in EXTERNAL_IDENTITY_FIELDS if row.get(field) in (None, "")]
+        if missing:
+            raise ValueError(f"External analysis row '{row_label}' missing required external identity fields: {', '.join(missing)}")
+
     source_runs = _load_runs(input_path)
     runs = [dict(r) for r in source_runs]
     if dataset_scope in {"external", "all"}:
@@ -424,10 +441,17 @@ def run_analysis(
             for external_dataset_name, payload in external_eval.items():
                 if not isinstance(payload, dict):
                     continue
+                missing_payload_fields = [field for field in EXTERNAL_IDENTITY_FIELDS if payload.get(field) in (None, "")]
+                if missing_payload_fields:
+                    raise ValueError(
+                        "External evaluation payload missing required identity fields for "
+                        f"dataset '{external_dataset_name}' in run '{row.get('run_name', '<unknown>')}': "
+                        + ", ".join(missing_payload_fields)
+                    )
                 flattened = dict(row)
-                flattened["dataset_name"] = external_dataset_name
+                for field in EXTERNAL_IDENTITY_FIELDS:
+                    flattened[field] = payload.get(field)
                 flattened["dataset_scope"] = "external"
-                flattened["dataset_type"] = "external"
                 flattened["analysis_tier_default"] = "descriptive"
                 flattened["final_eval_loss"] = payload.get("eval_loss")
                 for metric_name in (
@@ -438,6 +462,10 @@ def run_analysis(
                     "normalized_numeric_answer_accuracy",
                 ):
                     flattened[metric_name] = payload.get(metric_name)
+                _require_external_identity_fields(
+                    row=flattened,
+                    row_label=f"{row.get('run_name', '<unknown>')}::{external_dataset_name}",
+                )
                 external_rows.append(flattened)
         runs.extend(external_rows)
     if dataset_scope == "primary":
@@ -454,6 +482,12 @@ def run_analysis(
     grouped = _group_runs(runs)
     primary_rows = [r for r in runs if r.get("dataset_scope") != "external"]
     external_rows = [r for r in runs if r.get("dataset_scope") == "external"]
+    if dataset_scope in {"external", "all"}:
+        for row in external_rows:
+            _require_external_identity_fields(
+                row=row,
+                row_label=f"{row.get('run_name', '<unknown>')}::{row.get('dataset_name', '<unknown>')}",
+            )
     primary_grouped = _group_runs(primary_rows)
     external_grouped = _group_runs(external_rows)
 

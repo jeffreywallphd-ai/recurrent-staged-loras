@@ -37,6 +37,7 @@ Optional external evaluation datasets can be configured with:
 
 External evaluation is opt-in only. When enabled, each dataset is evaluated after primary eval and written under `external_eval.<dataset>.*` in `metrics.json`.
 External eval rows are descriptive-only by default, are labeled `report_tier=external_eval`, and are excluded from primary aggregates and confirmatory inference unless an explicit analysis override is set.
+Each `external_eval.<dataset>` payload is self-contained: metric values and the external dataset identity fields are stored together (`dataset_name`, `dataset_type=external`, `dataset_split`, `dataset_seed`, `dataset_subset_size`, `dataset_eval_fraction`, `dataset_fingerprint`, `train_sample_ids_hash`, `eval_sample_ids_hash`).
 
 Each sample is converted into a staged sequence:
 
@@ -235,6 +236,7 @@ For each group, mean/std are reported for:
 - **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.
 - **Confirmatory purity defaults:** confirmatory analysis fails on ablation-derived rows and pilot rows unless explicitly overridden (`--allow-ablations-in-analysis`, `--allow-pilot-runs-in-analysis`).
 - **External evaluation analysis mode:** external datasets remain descriptive by default and are analyzable only when explicitly selected via `--dataset-scope external` (or included in `--dataset-scope all`); confirmatory inference remains primary-dataset-only by default.
+- **External row identity semantics:** external-analysis rows are flattened from `external_eval.<dataset>` using the external payload identity fields (not inherited primary-run identity). External pairing checks validate external `dataset_fingerprint` and `eval_sample_ids_hash` per seed and fail loudly on mismatches.
 
 
 ## Threats to validity and known limitations

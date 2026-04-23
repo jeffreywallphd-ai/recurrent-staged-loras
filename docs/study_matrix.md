@@ -62,6 +62,7 @@ Supported config-driven external datasets:
 
 External scores are reported separately under `external_eval.<dataset>` and in `report_table.csv` rows with `report_tier=external_eval`.
 External rows are labeled `dataset_type=external` and excluded from primary aggregates and confirmatory inference by default.
+Each external payload is self-describing and carries its own dataset identity (`dataset_name`, `dataset_type`, `dataset_split`, `dataset_seed`, `dataset_subset_size`, `dataset_eval_fraction`, `dataset_fingerprint`, `train_sample_ids_hash`, `eval_sample_ids_hash`) alongside metrics.
 
 ## Ablations (optional, separated from confirmatory matrix)
 
@@ -120,6 +121,7 @@ Confirmatory inference is limited to the primary outcomes (`final_answer_accurac
 Confirmatory comparison validity requires matched `architecture_type`, `model_name`, and `dataset_name`; compared baselines can come from different config files and are audited with `config_name_a` / `config_name_b` in analysis outputs.
 
 External evaluation datasets are descriptive by default. They are included in analysis only in explicit external-analysis mode (`--dataset-scope external` or `--dataset-scope all`), and confirmatory inference remains primary-dataset-only unless intentionally changed.
+In external-analysis mode, flattened rows explicitly overwrite dataset identity from `external_eval.<dataset>` and are tagged `dataset_scope=external`; they do not inherit primary-run dataset fingerprints or sample hashes.
 Pilot rows (`*_pilot.json`) are also rejected by confirmatory analysis by default unless `--allow-pilot-runs-in-analysis` is explicitly provided.
 
 ## Dataset reproducibility identity (required)
