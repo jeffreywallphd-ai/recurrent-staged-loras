@@ -1,7 +1,13 @@
 import torch
 
 from data.dataset import _build_staged_text, build_train_eval_datasets, collate_token_sequences
-from training.answer_eval import extract_numeric_values, normalize_answer_text, numeric_match
+from training.answer_eval import (
+    NUMERIC_MULTI_VALUE_RULE,
+    extract_numeric_values,
+    normalize_answer_text,
+    numeric_match,
+    symbolic_equivalence_match,
+)
 
 
 def test_stage_masks_present_and_valid_in_test_dataset() -> None:
@@ -94,8 +100,34 @@ def test_normalization_and_numeric_extraction_are_reviewer_grade() -> None:
     assert extract_numeric_values("vals: -3, 2.5e1, 3/4") == [-3.0, 25.0, 0.75]
 
 
-def test_numeric_matching_tolerance_and_multi_value_behavior() -> None:
+def test_numeric_matching_tolerance_and_strict_multi_value_default() -> None:
+    assert NUMERIC_MULTI_VALUE_RULE == "strict_set"
     close = numeric_match("0.5000000001", "1/2")
     assert close.is_match is True
-    multi_any = numeric_match("1", "1, 2")
-    assert multi_any.is_match is True
+
+    same_set_diff_order = numeric_match("2, 1", "1, 2")
+    assert same_set_diff_order.is_match is True
+    assert same_set_diff_order.multi_value_status == "exact_set_match"
+
+    partial = numeric_match("1", "1, 2")
+    assert partial.is_match is False
+    assert partial.multi_value_status == "partial_overlap"
+
+
+def test_numeric_matching_rule_variants_are_explicit() -> None:
+    assert numeric_match("1", "1, 2", multi_value_rule="any").is_match is True
+    assert numeric_match("1", "1, 2", multi_value_rule="subset").is_match is True
+
+
+def test_symbolic_equivalence_success_and_parse_failure() -> None:
+    eq = symbolic_equivalence_match("x + x", "2*x")
+    assert eq.attempted is True
+    if eq.parse_success:
+        assert eq.is_match is True
+    else:
+        assert eq.is_match is False
+
+    fail = symbolic_equivalence_match("x + ???", "2*x")
+    assert fail.attempted is True
+    assert fail.parse_success is False
+    assert fail.is_match is False

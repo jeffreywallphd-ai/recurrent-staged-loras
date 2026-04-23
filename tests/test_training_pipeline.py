@@ -80,6 +80,7 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
         "stage_3_token_accuracy",
         "stage_2_token_accuracy",
         "normalized_numeric_answer_accuracy",
+        "symbolic_answer_accuracy",
         "architecture_type",
         "recurrence_steps",
         "effective_forward_passes_per_example",
@@ -87,7 +88,11 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
         "answer_eval_string_count",
     ]:
         assert key in metrics
-    assert (result.output_dir / "answer_eval_diagnostics.json").exists()
+    diagnostics_path = result.output_dir / "answer_eval_diagnostics.json"
+    assert diagnostics_path.exists()
+    diagnostics = json.loads(diagnostics_path.read_text())
+    assert diagnostics["numeric_multi_value_rule"] == "strict_set"
+    assert "symbolic_eval_attempt_count" in diagnostics
 
 
 def test_interval_eval_runs_at_step_cadence() -> None:
@@ -187,6 +192,7 @@ def test_final_answer_metrics_use_answer_span_not_stage3_header() -> None:
     assert eval_result.final_answer_exact_match == 1.0
     assert eval_result.final_answer_normalized_match == 1.0
     assert eval_result.normalized_numeric_answer_accuracy == 1.0
+    assert eval_result.answer_eval_multi_value_target_count == 0
 
 
 def test_final_answer_metrics_fail_when_answer_text_differs() -> None:

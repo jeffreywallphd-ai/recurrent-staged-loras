@@ -29,6 +29,7 @@ Primary multi-seed report runs use: `11`, `22`, `33`.
 - `final_answer_exact_match`
 - `final_answer_normalized_match`
 - `normalized_numeric_answer_accuracy`
+- `symbolic_answer_accuracy` (secondary robustness metric; conditional on parse success)
 
 ## Secondary diagnostics
 
@@ -60,4 +61,4 @@ Planned confirmatory contrasts are fixed in advance and evaluated separately ins
 - `stage_specialized_recurrence` vs `shared_recurrence`
 - `stage_specialized_recurrence` vs `latent_refiner_only`
 
-Confirmatory inference is limited to the primary outcomes (`final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `normalized_numeric_answer_accuracy`) with Holm family-wise correction across the full confirmatory family. Secondary and efficiency outcomes remain descriptive by default.
+Confirmatory inference is limited to the primary outcomes (`final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `normalized_numeric_answer_accuracy`); symbolic accuracy is retained as secondary because applicability depends on parse success rates with Holm family-wise correction across the full confirmatory family. Secondary and efficiency outcomes remain descriptive by default.

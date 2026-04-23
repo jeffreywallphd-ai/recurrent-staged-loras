@@ -97,6 +97,8 @@ def build_staged_examples_from_hf(
     stage3_non_empty = 0
     valid_answer_spans = 0
     numeric_answers = 0
+    truncated_examples = 0
+    answer_span_truncated = 0
 
     for idx in selected:
         row = ds[int(idx)]
@@ -118,6 +120,11 @@ def build_staged_examples_from_hf(
         )
         input_ids = torch.tensor(tok["input_ids"], dtype=torch.long)
         offsets = [(int(a), int(b)) for a, b in tok["offset_mapping"]]
+        max_char_covered = max((b for _a, b in offsets), default=0)
+        if max_char_covered < len(staged_text):
+            truncated_examples += 1
+            if answer_span[1] > max_char_covered:
+                answer_span_truncated += 1
         stage1_mask = _char_spans_to_token_mask(offsets, stage1_span)
         stage2_mask = _char_spans_to_token_mask(offsets, stage2_span)
         stage3_mask = _char_spans_to_token_mask(offsets, stage3_span)
@@ -154,6 +161,7 @@ def build_staged_examples_from_hf(
                 "final_answer_mask": answer_mask,
                 "answer_text": final_answer_text,
                 "answer_text_normalized": normalize_answer_text(final_answer_text),
+                "source_signature": normalize_answer_text(problem, semantic_numeric=False) + " || " + normalize_answer_text(final_answer_text, semantic_numeric=False),
             }
         )
 
@@ -171,6 +179,8 @@ def build_staged_examples_from_hf(
         "samples_with_valid_answer_spans": valid_answer_spans,
         "samples_with_numeric_answers": numeric_answers,
         "samples_excluded_or_degraded": filtered_empty + filtered_missing_stage3 + (len(examples) - valid_answer_spans),
+        "samples_truncated_to_max_seq_length": truncated_examples,
+        "samples_with_answer_span_truncated": answer_span_truncated,
     }
     return examples, stats
 
@@ -199,6 +209,7 @@ def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: 
                 "final_answer_mask": s3.clone(),
                 "answer_text": "7",
                 "answer_text_normalized": normalize_answer_text("7"),
+                "source_signature": f"synthetic-{seed}-{i}",
             }
         )
     return out
@@ -274,6 +285,8 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
             "samples_with_valid_answer_spans": total_examples,
             "samples_with_numeric_answers": total_examples,
             "samples_excluded_or_degraded": 0,
+            "samples_truncated_to_max_seq_length": 0,
+            "samples_with_answer_span_truncated": 0,
         }
         return DatasetBundle(train=SequenceDataset(train), eval=SequenceDataset(evalv), preprocessing_summary=summary)
 
@@ -290,8 +303,34 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
         cache_dir=settings.get("cache_dir"),
         split=str(settings.get("split", "train")),
     )
+    train_examples = examples[:train_count]
+    train_signatures = {str(ex.get("source_signature", "")) for ex in train_examples}
+    eval_candidates = examples[train_count:]
+    eval_examples: list[Example] = []
+    dropped_signature_overlap = 0
+    for ex in eval_candidates:
+        sig = str(ex.get("source_signature", ""))
+        if sig and sig in train_signatures:
+            dropped_signature_overlap += 1
+            continue
+        eval_examples.append(ex)
+        if len(eval_examples) >= eval_count:
+            break
+
+    if not eval_examples:
+        raise RuntimeError("No eval examples remain after train/eval signature de-duplication.")
+
+    preprocessing_summary = {
+        **preprocessing_summary,
+        "train_eval_partition_strategy": "single_split_shuffle_then_dedup_by_problem_answer_signature",
+        "train_eval_split_source": str(settings.get("split", "train")),
+        "train_examples_written": len(train_examples),
+        "eval_examples_written": len(eval_examples),
+        "eval_candidates_dropped_signature_overlap": dropped_signature_overlap,
+    }
+
     return DatasetBundle(
-        train=SequenceDataset(examples[:train_count]),
-        eval=SequenceDataset(examples[train_count : train_count + eval_count]),
+        train=SequenceDataset(train_examples),
+        eval=SequenceDataset(eval_examples),
         preprocessing_summary=preprocessing_summary,
     )

@@ -13,7 +13,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from models.staged_model import StagedLatentAdaptationModel
-from training.answer_eval import NUMERIC_ABS_TOL, NUMERIC_MULTI_VALUE_RULE, normalize_answer_text, numeric_match
+from training.answer_eval import (
+    NUMERIC_ABS_TOL,
+    NUMERIC_MULTI_VALUE_RULE,
+    normalize_answer_text,
+    numeric_match,
+    symbolic_equivalence_match,
+)
 
 
 @dataclass(slots=True)
@@ -27,6 +33,7 @@ class EvalResult:
     final_answer_exact_match: float | None
     final_answer_normalized_match: float | None
     normalized_numeric_answer_accuracy: float | None
+    symbolic_answer_accuracy: float | None
     answer_eval_string_count: int
     answer_eval_numeric_count: int
     answer_eval_skipped_no_stage3: int
@@ -40,9 +47,16 @@ class EvalResult:
     answer_eval_numeric_pred_value_count: int
     answer_eval_numeric_target_value_count: int
     answer_eval_numeric_value_match_count: int
+    answer_eval_multi_value_exact_set_match_count: int
+    answer_eval_multi_value_partial_match_count: int
+    answer_eval_multi_value_unmatched_count: int
     answer_eval_string_match_numeric_miss_count: int
     answer_eval_normalized_only_count: int
     answer_eval_skipped_ambiguous_numeric: int
+    answer_eval_symbolic_attempt_count: int
+    answer_eval_symbolic_success_count: int
+    answer_eval_symbolic_failure_count: int
+    answer_eval_symbolic_match_count: int
     answer_eval_length_histogram: dict[str, int]
 
 
@@ -151,12 +165,20 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     numeric_correct = numeric_total = 0
     numeric_match_count = 0
     multi_value_target_count = 0
+    multi_value_exact_set_match_count = 0
+    multi_value_partial_match_count = 0
+    multi_value_unmatched_count = 0
     numeric_pred_value_count = 0
     numeric_target_value_count = 0
     numeric_value_match_count = 0
     string_match_numeric_miss_count = 0
     normalized_only_count = 0
     skipped_ambiguous_numeric = 0
+    symbolic_attempt_count = 0
+    symbolic_success_count = 0
+    symbolic_failure_count = 0
+    symbolic_match_count = 0
+    symbolic_total = 0
     answer_length_bins: Counter[str] = Counter()
 
     skipped_no_stage3 = 0
@@ -238,6 +260,17 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                     if pred_norm == gold_norm_eval and pred_answer.strip() != gold_raw:
                         normalized_only_count += 1
 
+                    symbolic_result = symbolic_equivalence_match(pred_answer, gold_raw)
+                    if symbolic_result.attempted:
+                        symbolic_attempt_count += 1
+                        if symbolic_result.parse_success:
+                            symbolic_success_count += 1
+                            symbolic_total += 1
+                            if symbolic_result.is_match:
+                                symbolic_match_count += 1
+                        else:
+                            symbolic_failure_count += 1
+
                 if not gold_raw:
                     skipped_missing_numeric_target += 1
                     continue
@@ -253,6 +286,12 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                 numeric_value_match_count += num_result.match_count
                 if num_result.is_multi_value_target:
                     multi_value_target_count += 1
+                    if num_result.multi_value_status == "exact_set_match":
+                        multi_value_exact_set_match_count += 1
+                    elif num_result.multi_value_status == "partial_overlap":
+                        multi_value_partial_match_count += 1
+                    elif num_result.multi_value_status == "unmatched":
+                        multi_value_unmatched_count += 1
                 if num_result.is_match:
                     numeric_correct += 1
                     numeric_match_count += 1
@@ -267,6 +306,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     exact = float(exact_correct / exact_total) if exact_total > 0 else None
     normalized_match = float(normalized_match_correct / normalized_match_total) if normalized_match_total > 0 else None
     numeric_acc = float(numeric_correct / numeric_total) if numeric_total > 0 else None
+    symbolic_acc = float(symbolic_match_count / symbolic_total) if symbolic_total > 0 else None
     return EvalResult(
         loss=loss,
         wall_time_seconds=float(perf_counter() - start),
@@ -277,6 +317,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         final_answer_exact_match=exact,
         final_answer_normalized_match=normalized_match,
         normalized_numeric_answer_accuracy=numeric_acc,
+        symbolic_answer_accuracy=symbolic_acc,
         answer_eval_string_count=normalized_total,
         answer_eval_numeric_count=numeric_total,
         answer_eval_skipped_no_stage3=skipped_no_stage3,
@@ -290,9 +331,16 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         answer_eval_numeric_pred_value_count=numeric_pred_value_count,
         answer_eval_numeric_target_value_count=numeric_target_value_count,
         answer_eval_numeric_value_match_count=numeric_value_match_count,
+        answer_eval_multi_value_exact_set_match_count=multi_value_exact_set_match_count,
+        answer_eval_multi_value_partial_match_count=multi_value_partial_match_count,
+        answer_eval_multi_value_unmatched_count=multi_value_unmatched_count,
         answer_eval_string_match_numeric_miss_count=string_match_numeric_miss_count,
         answer_eval_normalized_only_count=normalized_only_count,
         answer_eval_skipped_ambiguous_numeric=skipped_ambiguous_numeric,
+        answer_eval_symbolic_attempt_count=symbolic_attempt_count,
+        answer_eval_symbolic_success_count=symbolic_success_count,
+        answer_eval_symbolic_failure_count=symbolic_failure_count,
+        answer_eval_symbolic_match_count=symbolic_match_count,
         answer_eval_length_histogram=dict(answer_length_bins),
     )
 
@@ -371,6 +419,7 @@ def run_training(
         "final_answer_exact_match": last_eval.final_answer_exact_match,
         "final_answer_normalized_match": last_eval.final_answer_normalized_match,
         "normalized_numeric_answer_accuracy": last_eval.normalized_numeric_answer_accuracy,
+        "symbolic_answer_accuracy": last_eval.symbolic_answer_accuracy,
         "answer_eval_string_count": int(last_eval.answer_eval_string_count),
         "answer_eval_numeric_count": int(last_eval.answer_eval_numeric_count),
         "answer_eval_skipped_no_stage3": int(last_eval.answer_eval_skipped_no_stage3),
@@ -384,9 +433,16 @@ def run_training(
         "answer_eval_numeric_pred_value_count": int(last_eval.answer_eval_numeric_pred_value_count),
         "answer_eval_numeric_target_value_count": int(last_eval.answer_eval_numeric_target_value_count),
         "answer_eval_numeric_value_match_count": int(last_eval.answer_eval_numeric_value_match_count),
+        "answer_eval_multi_value_exact_set_match_count": int(last_eval.answer_eval_multi_value_exact_set_match_count),
+        "answer_eval_multi_value_partial_match_count": int(last_eval.answer_eval_multi_value_partial_match_count),
+        "answer_eval_multi_value_unmatched_count": int(last_eval.answer_eval_multi_value_unmatched_count),
         "answer_eval_string_match_numeric_miss_count": int(last_eval.answer_eval_string_match_numeric_miss_count),
         "answer_eval_normalized_only_count": int(last_eval.answer_eval_normalized_only_count),
         "answer_eval_skipped_ambiguous_numeric": int(last_eval.answer_eval_skipped_ambiguous_numeric),
+        "symbolic_eval_attempt_count": int(last_eval.answer_eval_symbolic_attempt_count),
+        "symbolic_eval_success_count": int(last_eval.answer_eval_symbolic_success_count),
+        "symbolic_eval_failure_count": int(last_eval.answer_eval_symbolic_failure_count),
+        "answer_eval_symbolic_match_count": int(last_eval.answer_eval_symbolic_match_count),
         "answer_eval_numeric_abs_tolerance": float(NUMERIC_ABS_TOL),
         "answer_eval_numeric_multi_value_rule": NUMERIC_MULTI_VALUE_RULE,
         "answer_eval_answer_length_histogram": dict(last_eval.answer_eval_length_histogram),
