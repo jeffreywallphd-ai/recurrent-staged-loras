@@ -28,3 +28,9 @@ def test_variant_model_fields_parse_full_real_backend_schema() -> None:
     assert variant.base.device_map == "auto"
     assert variant.base.max_seq_length > 0
     assert variant.base.gradient_checkpointing is True
+
+
+def test_study_and_pilot_presets_are_separated() -> None:
+    study = load_experiment_config(Path("experiments/configs/standard_lora.json"))
+    pilot = load_experiment_config(Path("experiments/configs/standard_lora_pilot.json"))
+    assert int(study["training"]["max_steps"]) > int(pilot["training"]["max_steps"])

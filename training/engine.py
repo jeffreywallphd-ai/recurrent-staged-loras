@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 import json
 import random
 
 import torch
 from torch.utils.data import DataLoader
+from functools import partial
 
 from data.dataset import build_train_eval_datasets, collate_token_sequences
 from models.staged_model import StagedLatentAdaptationModel
@@ -26,6 +28,8 @@ class TrainingComponents:
     eval_loader: DataLoader[dict[str, torch.Tensor]]
     optimizer: torch.optim.Optimizer | None
     trainable_params: int
+    preprocessing_summary: dict[str, int]
+    tokenizer: Any | None
 
 
 @dataclass(slots=True)
@@ -40,6 +44,7 @@ class TrainResult:
     backend: str
     output_dir: Path
     checkpoint_path: Path
+
 
 
 def _set_seed(seed: int, deterministic: bool) -> None:
@@ -82,8 +87,15 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
         tokenizer=tokenizer,
     )
 
-    train_loader = DataLoader(bundle.train, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_token_sequences)
-    eval_loader = DataLoader(bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_token_sequences)
+    pad_token_id = 0
+    if tokenizer is not None:
+        if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        pad_token_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0)
+
+    collate_fn = partial(collate_token_sequences, pad_token_id=pad_token_id)
+    train_loader = DataLoader(bundle.train, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
+    eval_loader = DataLoader(bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
 
     trainable_params = _count_trainable_params(model)
     trainable_tensors = [p for p in model.parameters() if p.requires_grad]
@@ -91,7 +103,7 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     if trainable_tensors:
         optimizer = torch.optim.AdamW(trainable_tensors, lr=runtime.training.learning_rate, weight_decay=runtime.training.weight_decay)
 
-    return TrainingComponents(runtime=runtime, model=model, train_loader=train_loader, eval_loader=eval_loader, optimizer=optimizer, trainable_params=trainable_params)
+    return TrainingComponents(runtime=runtime, model=model, train_loader=train_loader, eval_loader=eval_loader, optimizer=optimizer, trainable_params=trainable_params, preprocessing_summary=bundle.preprocessing_summary, tokenizer=tokenizer)
 
 
 def run_training_loop(*, components: TrainingComponents, run_name: str, config_name: str = "unknown") -> TrainResult:
@@ -108,6 +120,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     )
     metadata.write(path=out_dir / "metadata.json")
     (out_dir / "config.json").write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
+    (out_dir / "dataset_preprocessing_summary.json").write_text(json.dumps(components.preprocessing_summary, indent=2), encoding="utf-8")
 
     training_summary = run_training(
         model=components.model,
@@ -118,6 +131,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         max_steps=runtime.training.max_steps,
         eval_interval_steps=runtime.training.eval_interval_steps,
         eval_enabled=runtime.training.eval_enabled,
+        tokenizer=components.tokenizer,
     )
 
     checkpoint_path = out_dir / "checkpoint.pt"

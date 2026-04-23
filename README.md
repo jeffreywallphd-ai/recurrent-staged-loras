@@ -1,58 +1,27 @@
 # recurrent-staged-loras
 
-A configurable, end-to-end experiment system for controlled adaptation studies across **dense** and **MoE** backbones.
+Controlled dense-vs-MoE adaptation study pipeline for staged supervision on MetaMathQA.
 
-## Default study backbones
+## Defaults
 
-- Dense default: `Qwen/Qwen3-8B`
-- MoE default: `allenai/OLMoE-1B-7B-0125-Instruct`
+- Dense family: `Qwen/Qwen3-8B`
+- MoE family: `allenai/OLMoE-1B-7B-0125-Instruct`
+- Baselines: `base`, `standard_lora`, `latent_refiner_only`, `shared_recurrence`, `stage_specialized_recurrence`
+- Dataset: `meta-math/MetaMathQA` with explicit 3-stage masks.
 
-Both are first-class defaults in `experiments/configs/` and share the same baseline family:
-1. `base`
-2. `standard_lora`
-3. `latent_refiner_only`
-4. `shared_recurrence`
-5. `stage_specialized_recurrence`
+## Study outputs
 
-## Real dataset default
+Each run writes `metrics.json` and `dataset_preprocessing_summary.json`.
 
-Default dataset is `metamath_qa` (`meta-math/MetaMathQA`) with deterministic subsetting (`subset_size`, `seed`) and local caching (`cache_dir`).
+Multi-seed orchestration writes:
+- `outputs/summary.json` (runs + aggregates)
+- `outputs/summary.csv` (run and aggregate rows)
+- `outputs/aggregates.json` (aggregate-only artifact)
 
-Each sample is converted into explicit 3-stage supervision:
-- Stage 1: problem understanding region
-- Stage 2: intermediate reasoning region
-- Stage 3: final answer region
+## Presets
 
-Stage masks are materialized in dataset examples and passed through collation (`stage1_mask`, `stage2_mask`, `stage3_mask`).
-
-## Real model configuration schema
-
-`model` supports:
-- `name`
-- `tokenizer_name`
-- `trust_remote_code`
-- `dtype`
-- `device_map`
-- `max_seq_length`
-- `load_in_4bit`
-- `bnb_4bit_compute_dtype`
-- `attn_implementation`
-- `gradient_checkpointing`
-- `architecture_type` (`dense` or `moe`)
-
-## Training + evaluation protocol
-
-- Base model is frozen in HF path.
-- Standard LoRA uses real PEFT target-module injection.
-- Recurrent modes use explicit stage-aware loss (step-to-stage alignment).
-- Evaluation records loss/perplexity, stage token accuracies, final answer metrics, numeric-answer proxy accuracy, and compute fairness metrics.
-
-## Multi-seed batch runs
-
-`run_all_experiments.py` supports `--seeds` (default `11 22 33`) and writes:
-- per-run `metrics.json`
-- `outputs/summary.json` with `runs` + `aggregates` (mean/std)
-- `outputs/summary.csv`
+- Study presets: `experiments/configs/*.json`
+- Pilot/smoke presets: `experiments/configs/*_pilot.json`
 
 ## Quick start
 
@@ -60,3 +29,10 @@ Stage masks are materialized in dataset examples and passed through collation (`
 python -m training.train --config experiments/configs/standard_lora.json --run-name dense_lora_seed11
 python scripts/run_all_experiments.py --configs experiments/configs/base.json experiments/configs/moe_base.json --seeds 11 22 33
 ```
+
+## Docs
+
+- `docs/README.md`
+- `docs/architecture.md`
+- `docs/baselines.md`
+- `docs/experiments.md`

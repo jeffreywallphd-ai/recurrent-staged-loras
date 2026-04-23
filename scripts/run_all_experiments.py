@@ -10,37 +10,16 @@ from statistics import mean, stdev
 
 from training.config_loader import load_runtime_config
 from training.engine import build_training_components, run_training_loop
+from training.metrics_schema import AGG_GROUP_BY_FIELDS, AGGREGATE_METRICS, RUN_METRICS_FIELDS
 
 
 SUMMARY_FIELDS = [
-    "baseline_name",
-    "run_name",
-    "config_name",
-    "seed",
-    "architecture_type",
-    "model_name",
-    "dataset_name",
-    "final_eval_loss",
-    "eval_perplexity",
-    "final_answer_accuracy",
-    "final_answer_exact_match",
-    "wall_time_seconds_total",
-    "tokens_seen_train",
-    "tokens_per_second_train",
-    "trainable_params",
-    "total_params",
-    "trainable_param_fraction",
-    "recurrence_steps",
-    "effective_forward_passes_per_example",
-]
-
-AGG_METRICS = [
-    "final_eval_loss",
-    "eval_perplexity",
-    "final_answer_accuracy",
-    "final_answer_exact_match",
-    "wall_time_seconds_total",
-    "tokens_per_second_train",
+    "row_type",
+    *RUN_METRICS_FIELDS,
+    "num_runs",
+    "metric_name",
+    "metric_mean",
+    "metric_std",
 ]
 
 
@@ -63,14 +42,18 @@ def parse_args() -> argparse.Namespace:
 
 def _agg(rows: list[dict[str, object]]) -> dict[str, object]:
     out: dict[str, object] = {}
-    for k in ("baseline_name", "config_name", "architecture_type", "model_name", "dataset_name"):
+    for k in AGG_GROUP_BY_FIELDS:
         out[k] = rows[0].get(k)
     out["num_runs"] = len(rows)
-    for metric in AGG_METRICS:
+    stats: dict[str, dict[str, float]] = {}
+    for metric in AGGREGATE_METRICS:
         vals = [float(r[metric]) for r in rows if r.get(metric) is not None]
         if vals:
-            out[f"{metric}_mean"] = mean(vals)
-            out[f"{metric}_std"] = stdev(vals) if len(vals) > 1 else 0.0
+            stats[metric] = {
+                "mean": mean(vals),
+                "std": stdev(vals) if len(vals) > 1 else 0.0,
+            }
+    out["metrics"] = stats
     return out
 
 
@@ -95,21 +78,35 @@ def main() -> None:
             runs.append(metrics)
             print(f"[ok] {run_name}")
 
-    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    grouped: dict[tuple[str, str, str], list[dict[str, object]]] = {}
     for row in runs:
-        key = (str(row["baseline_name"]), str(row["config_name"]))
+        key = (str(row["baseline_name"]), str(row["architecture_type"]), str(row["model_name"]))
         grouped.setdefault(key, []).append(row)
     aggregates = [_agg(rows) for rows in grouped.values()]
 
     output_dir = Path("outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps({"runs": runs, "aggregates": aggregates}, indent=2), encoding="utf-8")
+    (output_dir / "aggregates.json").write_text(json.dumps(aggregates, indent=2), encoding="utf-8")
 
     with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as fp:
         w = csv.DictWriter(fp, fieldnames=SUMMARY_FIELDS)
         w.writeheader()
         for r in runs:
-            w.writerow({k: r.get(k) for k in SUMMARY_FIELDS})
+            row = {"row_type": "run"}
+            row.update({k: r.get(k) for k in RUN_METRICS_FIELDS})
+            w.writerow(row)
+        for agg in aggregates:
+            for metric_name, stat in dict(agg.get("metrics", {})).items():
+                row = {
+                    "row_type": "aggregate",
+                    **{k: agg.get(k) for k in AGG_GROUP_BY_FIELDS},
+                    "num_runs": agg.get("num_runs"),
+                    "metric_name": metric_name,
+                    "metric_mean": stat.get("mean"),
+                    "metric_std": stat.get("std"),
+                }
+                w.writerow(row)
 
 
 if __name__ == "__main__":
