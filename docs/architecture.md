@@ -2,7 +2,7 @@
 
 ## High-level pipeline
 
-The planned model path for latent-refiner variants is:
+The model path for latent-refiner variants is:
 
 **frozen base LM -> latent refiner -> LM head**
 
@@ -10,7 +10,8 @@ More explicitly:
 
 1. The frozen base causal LM produces final hidden states.
 2. A latent refiner block optionally applies one or more refinement steps.
-3. The LM head maps refined hidden states to vocabulary logits.
+3. Optional step-aware adapters are applied within recurrence steps (depending on baseline).
+4. The LM head maps refined hidden states to vocabulary logits.
 
 This placement supports controlled testing of latent adaptation without changing tokenization, dataset formatting, or decoder head behavior.
 
@@ -23,25 +24,24 @@ This placement supports controlled testing of latent adaptation without changing
 
 - **Latent refiner** (`models/recurrent_refiner.py`)
   - Applies optional recurrence in latent space.
-  - Supports one-step behavior (no recurrence baseline path).
+  - Supports one-step behavior and multi-step recurrence.
 
 - **Step-aware adapter bank** (`models/lora_bank.py`)
-  - Routes LoRA adapters by step index when adapterized recurrence is enabled.
-  - Supports either shared recurrence or stage-specialized recurrence.
+  - Routes low-rank adapters by step index when adapterized recurrence is enabled.
+  - Supports either one shared adapter (`shared`) or per-step adapters (`per_step`).
 
 - **Top-level composition** (`models/staged_model.py`)
-  - Composes base wrapper + optional latent refiner.
+  - Composes base wrapper + optional latent refiner + optional adapter bank.
   - Provides a single forward interface for training/evaluation code.
 
-## Terminology and modes
+## Terminology and config semantics
 
-- **standard LoRA**: LoRA adaptation applied in the base model path (no latent refiner recurrence).
-- **latent refiner only**: latent refiner recurrence enabled without refiner adapters.
-- **shared recurrence**: recurrent latent refiner with one shared adapter reused across all steps.
-- **stage-specialized recurrence**: recurrent latent refiner with distinct adapter parameters for each step.
-- **latent refiner**: end-mounted latent-space module between base hidden states and LM head.
+- **standard LoRA**: adaptation in the base-model path, with latent refiner disabled.
+- **latent refiner only**: latent recurrence enabled with `recurrence_mode="latent_only"` and `adapter_sharing="none"`.
+- **shared recurrence**: latent recurrence enabled with `recurrence_mode="shared"` and `adapter_sharing="shared"` (one adapter reused across steps).
+- **stage-specialized recurrence**: latent recurrence enabled with `recurrence_mode="stage_specialized"` and `adapter_sharing="per_step"` (distinct adapter parameters per step).
 
-In this scaffold, the latent refiner is intended to support three usage patterns: without adapters (`latent refiner only`), with shared recurrence adapters, and with stage-specialized adapters.
+This keeps latent recurrence semantics separate from adapter-sharing semantics while still making each baseline explicit.
 
 ## Non-claims
 
