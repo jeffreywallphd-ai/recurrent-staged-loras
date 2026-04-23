@@ -64,11 +64,30 @@ Supported ablation grid controls:
 - `ablations.recurrent_steps`
 - `ablations.lora_rank`
 
+Validity constraints (fail-fast):
+- `ablations.recurrent_steps` requires `model.latent_refiner.enabled=true`.
+- `ablations.lora_rank` requires at least one active adapter (`standard_lora.enabled` or `latent_refiner.adapter.enabled`).
+- Rank ablations are applied only to active adapter paths.
+
 Expanded run names use suffix `_r{steps}_rank{rank}` and write explicit fields:
 - `ablation_recurrent_steps`
 - `ablation_lora_rank`
 
 Do not mix ablation-derived runs with confirmatory study reporting by default.
+
+## Run scopes
+
+`scripts/run_all_experiments.py` supports explicit isolation via `--run-scope`:
+- `confirmatory` (default): excludes ablation configs.
+- `ablation`: includes only ablation-derived runs.
+- `all`: includes both confirmatory and ablation runs.
+
+Artifacts store `run_scope` per run (`confirmatory` or `ablation`) so downstream filters can prevent accidental mixing.
+
+## Baseline naming rules
+
+- `baseline_name`: full executed baseline (including ablation suffixes such as `_r3_rank8`).
+- `baseline_family`: original baseline before ablation suffixing (e.g., `stage_specialized_recurrence`).
 
 ## Reportability protocol
 

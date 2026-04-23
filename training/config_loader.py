@@ -27,6 +27,9 @@ SHARED_DATASET_DEFAULTS: dict[str, Any] = {
 
 SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": "outputs/default"}
 SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
+SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
+SUPPORTED_EXTERNAL_EVAL_DATASETS = {"gsm8k", "math", "svamp"}
+TOKENIZER_REQUIRED_DATASETS = {"metamath_qa", "gsm8k", "math", "svamp"}
 
 
 def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -124,9 +127,34 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         compute_control=compute,
     )
 
+    dataset_name = str(dataset_resolved["name"]).strip().lower()
+    if dataset_name not in SUPPORTED_PRIMARY_DATASETS:
+        raise ValueError(f"Unsupported dataset '{dataset_name}'. Supported primary datasets: {sorted(SUPPORTED_PRIMARY_DATASETS)}")
+    dataset_resolved["name"] = dataset_name
+
+    for item in dataset_resolved.get("external_evaluations", []):
+        if not isinstance(item, dict):
+            raise ValueError("dataset.external_evaluations entries must be objects")
+        external_name = str(item.get("name", "")).strip().lower()
+        if not external_name:
+            raise ValueError("dataset.external_evaluations entry missing non-empty 'name'")
+        if external_name not in SUPPORTED_EXTERNAL_EVAL_DATASETS:
+            raise ValueError(
+                f"Unsupported external evaluation dataset '{external_name}'. "
+                f"Supported external datasets: {sorted(SUPPORTED_EXTERNAL_EVAL_DATASETS)}"
+            )
+
+    variant = parse_variant_config(raw)
+    ablation = raw.get("ablation", {})
+    if isinstance(ablation, dict):
+        if ablation.get("lora_rank") is not None and not (variant.standard_lora.enabled or variant.refiner_adapter.enabled):
+            raise ValueError("lora_rank ablation requested but no active adapter found")
+        if ablation.get("recurrent_steps") is not None and not variant.refiner.enabled:
+            raise ValueError("recurrent_steps ablation requested but latent_refiner.enabled is false")
+
     return RuntimeConfig(
         baseline=str(raw["baseline"]),
-        variant=parse_variant_config(raw),
+        variant=variant,
         training=training,
         dataset=dataset_resolved,
         output={"dir": str(output_resolved["dir"])},
