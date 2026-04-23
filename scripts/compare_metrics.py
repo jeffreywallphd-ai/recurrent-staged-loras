@@ -1,4 +1,4 @@
-"""Minimal utility to compare metrics.json files."""
+"""Utility to compare outcome and compute metrics across runs."""
 
 from __future__ import annotations
 
@@ -32,15 +32,32 @@ def main() -> None:
         rows.append(
             {
                 "baseline": metric.get("baseline_name", "unknown"),
-                "train_loss": metric.get("train_loss", "n/a"),
-                "eval_loss": metric.get("eval_loss", "n/a"),
-                "num_steps": metric.get("num_steps", "n/a"),
-                "num_epochs": metric.get("num_epochs", "n/a"),
+                "final_train_loss": metric.get("final_train_loss", metric.get("train_loss", "n/a")),
+                "final_eval_loss": metric.get("final_eval_loss", metric.get("eval_loss", "n/a")),
+                "global_steps_completed": metric.get("global_steps_completed", metric.get("num_steps", "n/a")),
+                "trainable_params": metric.get("trainable_params", "n/a"),
+                "total_params": metric.get("total_params", "n/a"),
+                "trainable_param_fraction": metric.get("trainable_param_fraction", "n/a"),
+                "wall_time_seconds_total": metric.get("wall_time_seconds_total", "n/a"),
+                "tokens_per_second_train": metric.get("tokens_per_second_train", "n/a"),
+                "steps_per_second": metric.get("steps_per_second", "n/a"),
                 "path": str(path),
             }
         )
 
-    headers = ["baseline", "train_loss", "eval_loss", "num_steps", "num_epochs", "path"]
+    headers = [
+        "baseline",
+        "final_train_loss",
+        "final_eval_loss",
+        "global_steps_completed",
+        "trainable_params",
+        "total_params",
+        "trainable_param_fraction",
+        "wall_time_seconds_total",
+        "tokens_per_second_train",
+        "steps_per_second",
+        "path",
+    ]
     widths = {h: max(len(h), *(len(_fmt(r[h])) for r in rows)) for h in headers}
 
     def line(parts: list[str]) -> str:

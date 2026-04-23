@@ -21,7 +21,7 @@ def main() -> None:
     runtime = load_runtime_config(args.config)
     baseline = select_baseline(runtime.raw)
     components = build_training_components(runtime)
-    result = run_training_loop(components=components, run_name=args.run_name)
+    result = run_training_loop(components=components, run_name=args.run_name, config_name=args.config)
 
     print(
         "[ok] "

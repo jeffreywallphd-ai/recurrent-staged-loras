@@ -72,6 +72,7 @@ output/<baseline>/<config_stem>/
   checkpoint.pt
 
 output/summary.json
+output/summary.csv
 ```
 
 ### Compare metrics from runs
@@ -80,14 +81,16 @@ output/summary.json
 python scripts/compare_metrics.py output/base/base/metrics.json output/standard_lora/standard_lora/metrics.json
 ```
 
-`metrics.json` includes:
-- `baseline_name`
-- `train_loss`
-- `eval_loss` (if eval enabled)
-- `num_steps`
-- `num_epochs`
+`metrics.json` now includes reproducibility context, outcome metrics, and compute/efficiency metrics.
+Core fields:
+- Run/context: `run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_mode`, `dataset_train_examples`, `dataset_eval_examples`, `batch_size`, `learning_rate`, `weight_decay`, `seed`, `deterministic`, `backend`
+- Outcome: `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `global_steps_completed`, `epochs_completed`
+- Compute/efficiency: `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `seconds_per_step`, `steps_per_second`
+- Parameterization: `trainable_params`, `total_params`, `trainable_param_fraction`
+- Compatibility aliases: `train_loss`, `eval_loss`, `num_steps`, `num_epochs`
 
-Use `output/summary.json` as the baseline-to-metrics map for quick comparisons.
+`output/summary.json` stores `{"runs": [...]}` where each item is a run record (not baseline-overwritten), including baseline, run/config identifiers, paths, and key copied metrics.
+`output/summary.csv` provides a tabular version for downstream empirical analysis.
 
 ## Reading order
 
