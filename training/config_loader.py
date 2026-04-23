@@ -1,7 +1,8 @@
-"""Experiment configuration loading and model-building helpers."""
+"""Experiment configuration loading and model/training-build helpers."""
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 import json
@@ -11,6 +12,42 @@ from models.frozen_base import FrozenBaseCausalLM
 from models.lora_bank import StepAwareLoRABank
 from models.recurrent_refiner import RecurrentLatentRefiner
 from models.staged_model import StagedLatentAdaptationModel
+
+
+@dataclass(slots=True)
+class TrainingConfig:
+    """Minimal runtime training settings loaded from experiment JSON."""
+
+    batch_size: int = 4
+    num_epochs: int = 1
+    max_steps: int = 8
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    seed: int = 0
+    eval_interval_steps: int = 4
+    checkpoint_interval_steps: int = 4
+
+
+@dataclass(slots=True)
+class RuntimeConfig:
+    """Top-level runtime config consumed by training entrypoint."""
+
+    baseline: str
+    variant: VariantConfig
+    training: TrainingConfig
+    dataset: dict[str, Any]
+    output: dict[str, Any]
+    raw: dict[str, Any]
+
+    def to_serializable_dict(self) -> dict[str, Any]:
+        return {
+            "baseline": self.baseline,
+            "variant": asdict(self.variant),
+            "training": asdict(self.training),
+            "dataset": self.dataset,
+            "output": self.output,
+            "raw": self.raw,
+        }
 
 
 def load_experiment_config(path: str | Path) -> dict[str, Any]:
@@ -23,6 +60,39 @@ def load_experiment_config(path: str | Path) -> dict[str, Any]:
 def load_variant_config(path: str | Path) -> VariantConfig:
     """Load and parse experiment config into typed variant config."""
     return parse_variant_config(load_experiment_config(path))
+
+
+def load_runtime_config(path: str | Path) -> RuntimeConfig:
+    """Load runtime settings (variant + training/data/output sections)."""
+    raw = load_experiment_config(path)
+    training_raw = raw.get("training", {})
+    dataset_raw = raw.get("dataset", {})
+    output_raw = raw.get("output", {})
+
+    training = TrainingConfig(
+        batch_size=int(training_raw.get("batch_size", 4)),
+        num_epochs=int(training_raw.get("num_epochs", 1)),
+        max_steps=int(training_raw.get("max_steps", 8)),
+        learning_rate=float(training_raw.get("learning_rate", 1e-3)),
+        weight_decay=float(training_raw.get("weight_decay", 0.0)),
+        seed=int(training_raw.get("seed", 0)),
+        eval_interval_steps=int(training_raw.get("eval_interval_steps", 4)),
+        checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 4)),
+    )
+
+    return RuntimeConfig(
+        baseline=str(raw["baseline"]),
+        variant=parse_variant_config(raw),
+        training=training,
+        dataset={
+            "name": str(dataset_raw.get("name", "synthetic_integer_sequences")),
+            "settings": dict(dataset_raw.get("settings", {})),
+        },
+        output={
+            "dir": str(output_raw.get("dir", "outputs/default")),
+        },
+        raw=raw,
+    )
 
 
 def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationModel:

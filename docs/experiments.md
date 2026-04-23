@@ -29,8 +29,8 @@ Across the matrix, keep fixed where feasible:
 
 1. Each baseline config loads successfully.
 2. Baseline selector routes each config to the intended variant.
-3. Training entrypoint can build a real model path and run a tiny forward/loss/backward trainability smoke pass.
-4. Training entrypoint writes run metadata for reproducibility.
+3. Training entrypoint can run a tiny end-to-end train/eval loop with synthetic integer-sequence data.
+4. Training entrypoint writes run metadata, parsed-config snapshot, metrics summary, and a model checkpoint for reproducibility.
 
 ## Failure criteria (scaffold stage)
 
@@ -41,6 +41,6 @@ Across the matrix, keep fixed where feasible:
 
 ## Out of scope for this initial version
 
-- Full optimizer/scheduler implementation.
+- Full optimizer/scheduler implementation beyond minimal deterministic baseline loop.
 - Production-grade backend integration for LoRA libraries.
 - Full benchmark claims beyond smoke-level wiring checks.

@@ -31,10 +31,11 @@ This version now provides a minimal trainable baseline core:
 - baseline definitions and config semantics,
 - model composition with torch modules and trainability smoke path,
 - config parsing and baseline selection,
-- run metadata plumbing and lightweight tests.
+- minimal end-to-end training loop with synthetic dataset, batching, optimizer, eval, and checkpoints,
+- run metadata/config/metrics artifacts and lightweight tests.
 
 Still deferred:
-- full optimizer/scheduler/trainer loop sophistication,
+- full optimizer/scheduler sophistication beyond minimal AdamW loop,
 - production-grade external LoRA backend integration,
 - full benchmark reporting.
 

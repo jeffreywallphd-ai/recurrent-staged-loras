@@ -107,6 +107,9 @@ class FrozenBaseCausalLM(nn.Module):
         if self.model_name.startswith("example/"):
             torch.manual_seed(sum(ord(c) for c in self.model_name) % 100_000)
             self.internal_model = TinyInternalCausalLM(vocab_size=self.vocab_size, hidden_size=self.hidden_size)
+            if self.freeze_base:
+                for param in self.internal_model.parameters():
+                    param.requires_grad = False
             return
 
         try:
