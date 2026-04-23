@@ -115,7 +115,7 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     )
 
 
-def run_evaluation(*, components: TrainingComponents, global_step: int, epoch_index: int = 0) -> float:
+def run_evaluation(*, components: TrainingComponents, global_step: int, epoch_index: int = 0) -> object:
     from training.loop import evaluate
 
     return evaluate(
@@ -201,12 +201,23 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
         "seconds_per_step": float(training_summary["seconds_per_step"]),
         "steps_per_second": float(training_summary["steps_per_second"]),
+        "eval_perplexity": float(training_summary["eval_perplexity"]),
+        "train_perplexity": float(training_summary["train_perplexity"]),
         "backend": components.model.base_model.backend,
         "trainable_params": components.trainable_params,
         "total_params": total_params,
         "trainable_param_fraction": trainable_param_fraction,
         "latent_cache": LATENT_CACHE_STATUS,
     }
+    if "eval_next_token_accuracy" in training_summary:
+        metrics["eval_next_token_accuracy"] = float(training_summary["eval_next_token_accuracy"])
+    if "eval_top_5_accuracy" in training_summary:
+        metrics["eval_top_5_accuracy"] = float(training_summary["eval_top_5_accuracy"])
+    if "eval_target_token_accuracy" in training_summary:
+        metrics["eval_target_token_accuracy"] = float(training_summary["eval_target_token_accuracy"])
+    if "eval_target_sequence_exact_match" in training_summary:
+        metrics["eval_target_sequence_exact_match"] = float(training_summary["eval_target_sequence_exact_match"])
+
     metrics_path = out_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 

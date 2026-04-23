@@ -47,3 +47,9 @@ def test_structured_sequence_mode_construction() -> None:
     example = bundle.train[0]
     assert example["input_ids"].shape[0] == 10
     assert example["labels"].shape[0] == 10
+    assert "target_mask" in example
+    assert int(example["target_mask"].sum().item()) == 6
+
+    batch = collate_token_sequences([bundle.eval[0], bundle.eval[1]])
+    assert "target_mask" in batch
+    assert batch["target_mask"].shape == (2, 10)

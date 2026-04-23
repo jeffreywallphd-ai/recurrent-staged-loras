@@ -12,6 +12,7 @@ Supported local dataset modes:
 - `structured_sequence`
 
 All modes emit labeled examples (`input_ids`, `labels`) using next-token prediction labels.
+`structured_sequence` additionally emits `target_mask`, which marks the target span used for task-specific eval metrics.
 
 ## Reproducibility protocol
 
@@ -28,6 +29,11 @@ The training loop computes:
 - train loss during training
 - evaluation loss at end of training
 - optional interval evaluation during training (`eval_interval_steps` + `eval_enabled`)
+
+Timing semantics:
+- `wall_time_seconds_train` measures pure training step time (interval eval excluded)
+- `wall_time_seconds_eval` accumulates all eval passes (interval + final)
+- `wall_time_seconds_total` is full run wall clock
 
 ## Required run artifacts
 
@@ -54,12 +60,20 @@ Run/context fields:
 - `deterministic`
 - `backend`
 
-Outcome fields:
+Outcome metrics:
 - `final_train_loss`
 - `final_eval_loss`
 - `best_eval_loss`
+- `train_perplexity`
+- `eval_perplexity`
+- `eval_next_token_accuracy`
+- `eval_top_5_accuracy`
 - `global_steps_completed`
 - `epochs_completed`
+
+Task-specific outcome metrics (only for `structured_sequence`):
+- `eval_target_token_accuracy`
+- `eval_target_sequence_exact_match`
 
 Compute/efficiency fields:
 - `wall_time_seconds_total`
@@ -83,6 +97,9 @@ Compatibility aliases:
 - `num_steps` (same value as `global_steps_completed`)
 - `num_epochs` (same value as `epochs_completed`)
 
+Perplexity notes:
+- Perplexity is derived from next-token cross-entropy (`exp(loss)`), with numeric clamping for stability.
+
 ## Running one experiment
 
 ```bash
@@ -95,11 +112,11 @@ python -m training.train --config experiments/configs/standard_lora.json --run-n
 python scripts/run_all_experiments.py --config-dir experiments/configs
 ```
 
-This writes per-baseline runs under `output/<baseline>/<config_stem>/` and aggregates to `output/summary.json`.
-Batch runs also produce `output/summary.csv`.
+This writes per-baseline runs under `outputs/<baseline>/<config_stem>/` and aggregates to `outputs/summary.json`.
+Batch runs also produce `outputs/summary.csv`.
 
 Batch aggregation format:
-- `output/summary.json` is `{"runs": [...]}`.
+- `outputs/summary.json` is `{"runs": [...]}`.
 - Each run record includes baseline, run/config identity, paths, and key outcome/compute metrics.
 - Runs are append-like within a single invocation and are not collapsed by baseline key, so multiple runs for the same baseline remain visible.
 
@@ -108,7 +125,7 @@ Batch aggregation format:
 For quick terminal comparisons:
 
 ```bash
-python scripts/compare_metrics.py output/base/base/metrics.json output/standard_lora/standard_lora/metrics.json
+python scripts/compare_metrics.py outputs/base/base/metrics.json outputs/standard_lora/standard_lora/metrics.json
 ```
 
-This prints a compact comparison table over both quality and efficiency fields (losses, steps, parameters, timing, and throughput).
+This prints a compact comparison table over quality and efficiency fields (losses, perplexity, accuracies, parameters, timing, and throughput).
