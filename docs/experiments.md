@@ -209,6 +209,18 @@ For each group, mean/std are reported for:
 - **Pilot presets:** `*_pilot.json` variants for smoke checks and quick iteration.
 - Default orchestration mode is reportable study runs only: `--preset-scope study`.
 
+## Best available study workflow (current option set)
+
+There is intentionally **no single master config** that combines confirmatory, compute-controlled, external-eval, and ablation semantics into one run. Under the current design, the strongest study path is a **multi-family workflow** across existing shipped config families:
+
+1. **Main confirmatory study (reportable):** no-suffix base configs.
+2. **Compute-controlled robustness (supporting):** `*_compute_controlled.json`.
+3. **External-eval robustness (descriptive by default):** `*_external_eval.json`.
+4. **Ablation robustness (supporting, non-confirmatory by default):** `*_ablation.json` with `--run-scope ablation`.
+5. **Debug bug-hunting (non-reportable):** `*_debug.json` / `*_debug_external_eval.json`.
+
+This is the recommended top-level workflow for the most robust currently supported study surface.
+
 ## Which config should I use?
 
 Use explicit suffix-based families in `experiments/configs`:
@@ -222,30 +234,61 @@ Use explicit suffix-based families in `experiments/configs`:
 
 Recommended workflows:
 
-1. **Full paper runs:** confirmatory family + seeds `11 22 33`.
-2. **Pilot runs:** `_pilot` family for faster end-to-end checks.
-3. **Quick bug checks:** `_debug` family (very small subset + low steps).
-4. **External evaluation checks:** `_external_eval` family (adds GSM8K/MATH/SVAMP entries).
-5. **Ablation sweeps:** `_ablation` family + `--run-scope ablation`.
-6. **Compute-controlled comparisons:** `_compute_controlled` family.
+1. **Full paper runs (reportable confirmatory):** confirmatory family + seeds `11 22 33`.
+2. **Compute-controlled robustness:** `_compute_controlled` family + seeds `11 22 33`.
+3. **External-eval robustness (descriptive):** `_external_eval` family + seeds `11 22 33`.
+4. **Ablation robustness sweeps:** `_ablation` family + `--run-scope ablation`.
+5. **Quick bug checks:** `_debug` family (very small subset + low steps).
+6. **Pilot runs:** `_pilot` family for faster end-to-end checks.
 
-You can now select these directly:
+Concrete sweep commands using existing orchestrator flags:
 
 ```bash
 python scripts/run_all_experiments.py \
   --config-dir experiments/configs \
-  --config-family debug \
-  --preset-scope all \
-  --seeds 7
+  --config-family confirmatory \
+  --preset-scope study \
+  --run-scope confirmatory \
+  --seeds 11 22 33
 ```
 
 ```bash
 python scripts/run_all_experiments.py \
   --config-dir experiments/configs \
   --config-family compute_controlled \
-  --preset-scope all \
+  --preset-scope study \
+  --run-scope confirmatory \
   --seeds 11 22 33
 ```
+
+```bash
+python scripts/run_all_experiments.py \
+  --config-dir experiments/configs \
+  --config-family external_eval \
+  --preset-scope study \
+  --run-scope confirmatory \
+  --seeds 11 22 33
+```
+
+```bash
+python scripts/run_all_experiments.py \
+  --config-dir experiments/configs \
+  --config-family ablation \
+  --preset-scope study \
+  --run-scope ablation \
+  --seeds 11 22 33
+```
+
+```bash
+python scripts/run_all_experiments.py \
+  --config-dir experiments/configs \
+  --config-family debug \
+  --preset-scope all \
+  --run-scope all \
+  --seeds 7
+```
+
+Paired dense+MoE runs are included automatically when the selected family contains both dense and `moe_*` configs (as in shipped confirmatory/compute-controlled/external-eval/ablation families).
 
 ### Ultra-fast debug/smoke external eval example (non-reportable)
 
@@ -254,10 +297,20 @@ python scripts/run_all_experiments.py \
 - `batch_size=1`
 - very low `max_steps`
 - single-seed friendly
-- tiny external subsets:
+- tiny external subsets (configured per external dataset entry in `dataset.external_evaluations`):
   - `gsm8k`: `subset_size=3`
   - `math`: `subset_size=3`
   - `svamp`: `subset_size=3`
+
+Example snippet from a debug-external-eval config:
+
+```json
+"external_evaluations": [
+  {"name": "gsm8k", "split": "test", "subset_size": 3, "seed": 3},
+  {"name": "math", "split": "test", "subset_size": 3, "seed": 3},
+  {"name": "svamp", "split": "test", "subset_size": 3, "seed": 3}
+]
+```
 
 ### External dataset settings (per dataset entry)
 

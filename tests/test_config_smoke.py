@@ -52,6 +52,43 @@ def test_all_config_families_load_with_runtime_config() -> None:
             load_runtime_config(path)
 
 
+def test_robust_study_workflow_matrix_is_shipped_for_dense_and_moe() -> None:
+    config_dir = Path("experiments/configs")
+    required_baselines = [
+        "base",
+        "standard_lora",
+        "latent_refiner_only",
+        "shared_recurrence",
+        "stage_specialized_recurrence",
+    ]
+    family_suffix_by_key = {
+        "confirmatory": "",
+        "compute_controlled": "_compute_controlled",
+        "external_eval": "_external_eval",
+        "debug": "_debug",
+    }
+
+    for architecture_prefix in ("", "moe_"):
+        for baseline in required_baselines:
+            for family_key, suffix in family_suffix_by_key.items():
+                name = f"{architecture_prefix}{baseline}{suffix}.json"
+                path = config_dir / name
+                assert path.exists(), f"missing {family_key} config for {architecture_prefix or 'dense_'}{baseline}"
+                load_runtime_config(path)
+
+    ablation_compatible_baselines = [
+        "latent_refiner_only",
+        "shared_recurrence",
+        "stage_specialized_recurrence",
+        "standard_lora",
+    ]
+    for architecture_prefix in ("", "moe_"):
+        for baseline in ablation_compatible_baselines:
+            path = config_dir / f"{architecture_prefix}{baseline}_ablation.json"
+            assert path.exists(), f"missing ablation config for {architecture_prefix or 'dense_'}{baseline}"
+            load_runtime_config(path)
+
+
 def test_external_eval_entries_are_normalized() -> None:
     runtime = load_runtime_config(Path("experiments/configs/stage_specialized_recurrence_debug_external_eval.json"))
     external = runtime.dataset["external_evaluations"]
@@ -60,3 +97,16 @@ def test_external_eval_entries_are_normalized() -> None:
         assert item["split"] == "test"
         assert int(item["subset_size"]) == 3
         assert int(item["seed"]) == 3
+
+
+def test_tiny_external_subset_debug_path_is_represented_in_shipped_configs() -> None:
+    debug_external_configs = [
+        Path("experiments/configs/stage_specialized_recurrence_debug_external_eval.json"),
+        Path("experiments/configs/moe_stage_specialized_recurrence_debug_external_eval.json"),
+    ]
+    for path in debug_external_configs:
+        runtime = load_runtime_config(path)
+        external = {item["name"]: item for item in runtime.dataset["external_evaluations"]}
+        assert external["gsm8k"]["subset_size"] == 3
+        assert external["math"]["subset_size"] == 3
+        assert external["svamp"]["subset_size"] == 3
