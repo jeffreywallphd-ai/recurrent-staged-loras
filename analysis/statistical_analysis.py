@@ -6,12 +6,15 @@ import argparse
 import csv
 import json
 import math
+import random
 from dataclasses import asdict
 from pathlib import Path
 from statistics import mean, median
+from typing import Any
 
 from analysis.analysis_schema import (
     ALPHA,
+    CONFIRMATORY_FWER_METHOD,
     EFFICIENCY_OUTCOMES,
     PRIMARY_CONFIRMATORY_OUTCOMES,
     REQUIRED_ID_COLUMNS,
@@ -72,63 +75,108 @@ def _validate_runs(runs: list[dict[str, object]]) -> None:
         raise ValueError(f"Required metric(s) missing from all runs: {', '.join(missing)}")
 
 
-def _group_runs(runs: list[dict[str, object]]) -> dict[tuple[str, str], dict[int, dict[str, object]]]:
-    grouped: dict[tuple[str, str], dict[int, dict[str, object]]] = {}
+ConditionSeedKey = tuple[str, str, str, str, str, int]
+ConditionFamilyKey = tuple[str, str, str, str, str]
+
+
+def _group_runs(runs: list[dict[str, object]]) -> dict[ConditionSeedKey, dict[str, object]]:
+    grouped: dict[ConditionSeedKey, dict[str, object]] = {}
     for row in runs:
-        arch = str(row["architecture_type"])
-        baseline = str(row["baseline_name"])
-        seed = int(row["seed"])
-        grouped.setdefault((arch, baseline), {})[seed] = row
+        key = (
+            str(row["architecture_type"]),
+            str(row["baseline_name"]),
+            str(row["model_name"]),
+            str(row["dataset_name"]),
+            str(row["config_name"]),
+            int(row["seed"]),
+        )
+        if key in grouped:
+            raise ValueError(
+                "Duplicate run for condition+seed key detected: "
+                f"architecture_type={key[0]}, baseline_name={key[1]}, model_name={key[2]}, "
+                f"dataset_name={key[3]}, config_name={key[4]}, seed={key[5]}"
+            )
+        grouped[key] = row
     return grouped
+
+
+def _extract_condition_families(
+    grouped: dict[ConditionSeedKey, dict[str, object]], architecture_type: str, baseline_name: str
+) -> dict[tuple[str, str, str], dict[int, dict[str, object]]]:
+    families: dict[tuple[str, str, str], dict[int, dict[str, object]]] = {}
+    for (arch, baseline, model, dataset, config, seed), row in grouped.items():
+        if arch != architecture_type or baseline != baseline_name:
+            continue
+        family_key = (model, dataset, config)
+        families.setdefault(family_key, {})[seed] = row
+    return families
+
+
+def _require_homogeneous_family(
+    *,
+    grouped: dict[ConditionSeedKey, dict[str, object]],
+    architecture_type: str,
+    baseline_a: str,
+    baseline_b: str,
+) -> tuple[ConditionFamilyKey, dict[int, dict[str, object]], dict[int, dict[str, object]]]:
+    families_a = _extract_condition_families(grouped, architecture_type, baseline_a)
+    families_b = _extract_condition_families(grouped, architecture_type, baseline_b)
+
+    if not families_a or not families_b:
+        raise ValueError(f"Missing planned contrast groups for {architecture_type}: {baseline_a} vs {baseline_b}")
+
+    if len(families_a) != 1 or len(families_b) != 1:
+        raise ValueError(
+            "Heterogeneous comparison group detected for planned confirmatory contrast "
+            f"{architecture_type}: {baseline_a} vs {baseline_b}. "
+            f"Expected one (model_name, dataset_name, config_name) family per baseline, got "
+            f"{sorted(families_a)} for {baseline_a} and {sorted(families_b)} for {baseline_b}."
+        )
+
+    family_a = next(iter(families_a))
+    family_b = next(iter(families_b))
+    if family_a != family_b:
+        raise ValueError(
+            "Non-homogeneous planned contrast detected: compared groups must share identical "
+            f"(model_name, dataset_name, config_name), got {family_a} vs {family_b} "
+            f"for {architecture_type}: {baseline_a} vs {baseline_b}."
+        )
+
+    model_name, dataset_name, config_name = family_a
+    return (
+        (architecture_type, baseline_a, model_name, dataset_name, config_name),
+        families_a[family_a],
+        families_b[family_b],
+    )
+
+
+def _get_stats_backend() -> Any:
+    try:
+        from scipy import stats
+    except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+        raise RuntimeError(
+            "scipy is required for confirmatory inference (Wilcoxon signed-rank and paired t-test sensitivity). "
+            "Install scipy to run analysis/statistical_analysis.py."
+        ) from exc
+    return stats
 
 
 def _wilcoxon_signed_rank(differences: list[float]) -> float:
     non_zero = [d for d in differences if abs(d) > 0]
-    n = len(non_zero)
-    if n == 0:
+    if not non_zero:
         return 1.0
-    abs_vals = sorted((abs(d), i) for i, d in enumerate(non_zero))
-    ranks = [0.0] * n
-    i = 0
-    rank = 1
-    while i < n:
-        j = i
-        while j + 1 < n and abs_vals[j + 1][0] == abs_vals[i][0]:
-            j += 1
-        avg_rank = (rank + rank + (j - i)) / 2.0
-        for k in range(i, j + 1):
-            ranks[abs_vals[k][1]] = avg_rank
-        rank += j - i + 1
-        i = j + 1
-
-    w_plus = sum(r for r, d in zip(ranks, non_zero, strict=True) if d > 0)
-    w_minus = sum(r for r, d in zip(ranks, non_zero, strict=True) if d < 0)
-    w = min(w_plus, w_minus)
-
-    mean_w = n * (n + 1) / 4.0
-    var_w = n * (n + 1) * (2 * n + 1) / 24.0
-    if var_w == 0:
-        return 1.0
-    z = (w - mean_w) / math.sqrt(var_w)
-    p = 2.0 * (1.0 - _normal_cdf(abs(z)))
-    return max(0.0, min(1.0, p))
-
-
-def _normal_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    stats = _get_stats_backend()
+    result = stats.wilcoxon(non_zero, zero_method="wilcox", alternative="two-sided", method="auto")
+    return float(result.pvalue)
 
 
 def _paired_t_pvalue(differences: list[float]) -> float | None:
-    n = len(differences)
-    if n < 2:
+    if len(differences) < 2:
         return None
-    mu = mean(differences)
-    var = sum((d - mu) ** 2 for d in differences) / (n - 1)
-    if var == 0:
-        return 1.0
-    t_stat = mu / math.sqrt(var / n)
-    p_norm_approx = 2.0 * (1.0 - _normal_cdf(abs(t_stat)))
-    return max(0.0, min(1.0, p_norm_approx))
+    stats = _get_stats_backend()
+    zeros = [0.0] * len(differences)
+    result = stats.ttest_rel(differences, zeros, alternative="two-sided")
+    return float(result.pvalue)
 
 
 def _effect_size(differences: list[float]) -> float | None:
@@ -141,23 +189,43 @@ def _effect_size(differences: list[float]) -> float | None:
     return mu / sd
 
 
+def _paired_mean_difference_bootstrap_ci(
+    differences: list[float], *, alpha: float = ALPHA, n_resamples: int = 5000, seed: int = 0
+) -> tuple[float | None, float | None]:
+    if not differences:
+        return (None, None)
+    rng = random.Random(seed)
+    n = len(differences)
+    resampled_means = [mean(differences[rng.randrange(n)] for _ in range(n)) for _ in range(n_resamples)]
+    resampled_means.sort()
+    lower_idx = int((alpha / 2) * (n_resamples - 1))
+    upper_idx = int((1 - alpha / 2) * (n_resamples - 1))
+    return (float(resampled_means[lower_idx]), float(resampled_means[upper_idx]))
+
+
 def _holm_adjust(rows: list[dict[str, object]], alpha: float = ALPHA) -> None:
-    indexed = [(i, float(r["raw_p_value"])) for i, r in enumerate(rows)]
-    indexed.sort(key=lambda x: x[1])
-    m = len(indexed)
+    eligible = [
+        (i, float(r["raw_p_value"]))
+        for i, r in enumerate(rows)
+        if r.get("analysis_tier") == "confirmatory" and r.get("raw_p_value") is not None
+    ]
+    if not eligible:
+        return
+    eligible.sort(key=lambda x: x[1])
+    m = len(eligible)
     adjusted = [1.0] * m
-    for k, (_idx, p) in enumerate(indexed):
+    for k, (_idx, p) in enumerate(eligible):
         adjusted[k] = min(1.0, (m - k) * p)
     for k in range(1, m):
         adjusted[k] = max(adjusted[k], adjusted[k - 1])
-    for k, (orig_idx, _p) in enumerate(indexed):
+    for k, (orig_idx, _p) in enumerate(eligible):
         rows[orig_idx]["holm_adjusted_p_value"] = adjusted[k]
         rows[orig_idx]["reject_after_holm"] = adjusted[k] <= alpha
 
 
 def _compare_metric(
     *,
-    grouped: dict[tuple[str, str], dict[int, dict[str, object]]],
+    grouped: dict[ConditionSeedKey, dict[str, object]],
     architecture_type: str,
     baseline_a: str,
     baseline_b: str,
@@ -165,20 +233,21 @@ def _compare_metric(
     allow_unpaired: bool,
     primary: bool,
 ) -> dict[str, object]:
-    key_a = (architecture_type, baseline_a)
-    key_b = (architecture_type, baseline_b)
-    if key_a not in grouped or key_b not in grouped:
-        raise ValueError(f"Missing planned contrast groups for {architecture_type}: {baseline_a} vs {baseline_b}")
-
-    rows_a = grouped[key_a]
-    rows_b = grouped[key_b]
+    (family, rows_a, rows_b) = _require_homogeneous_family(
+        grouped=grouped,
+        architecture_type=architecture_type,
+        baseline_a=baseline_a,
+        baseline_b=baseline_b,
+    )
+    _, _, model_name, dataset_name, config_name = family
     overlap = sorted(set(rows_a) & set(rows_b))
 
     if not overlap:
         if primary and not allow_unpaired:
             raise ValueError(
-                f"No overlapping seeds for confirmatory contrast {architecture_type}: {baseline_a} vs {baseline_b}. "
-                "Re-run with aligned seeds or pass --allow-unpaired to explicitly downgrade."
+                f"No overlapping seeds for confirmatory contrast {architecture_type}: {baseline_a} vs {baseline_b} "
+                f"(model={model_name}, dataset={dataset_name}, config={config_name}). "
+                "Re-run with aligned seeds or pass --allow-unpaired to explicitly downgrade to descriptive."
             )
         all_a = sorted(rows_a)
         all_b = sorted(rows_b)
@@ -191,20 +260,29 @@ def _compare_metric(
         diff = mean(values_a) - mean(values_b)
         return {
             "architecture_type": architecture_type,
+            "model_name": model_name,
+            "dataset_name": dataset_name,
+            "config_name": config_name,
             "metric_name": metric_name,
             "baseline_a": baseline_a,
             "baseline_b": baseline_b,
+            "analysis_tier": "descriptive_downgraded" if primary else "descriptive",
+            "downgraded_to_descriptive": bool(primary),
             "pairing_used": "unpaired",
             "seeds_included": [],
             "n_pairs": 0,
             "test_name": "descriptive_unpaired_difference",
-            "raw_p_value": 1.0,
+            "raw_p_value": None,
+            "holm_adjusted_p_value": None,
+            "reject_after_holm": None,
             "mean_difference": diff,
             "median_difference": diff,
+            "mean_difference_ci_low": None,
+            "mean_difference_ci_high": None,
             "effect_size": None,
             "direction_of_effect": "positive" if diff > 0 else ("negative" if diff < 0 else "neutral"),
             "paired_ttest_p_value": None,
-            "notes": "No overlapping seeds; unpaired downgrade used.",
+            "notes": "No overlapping seeds; treated as descriptive-only unpaired summary and excluded from Holm correction.",
         }
 
     paired_values: list[tuple[int, float, float]] = []
@@ -224,25 +302,33 @@ def _compare_metric(
 
     mean_diff = mean(differences)
     median_diff = median(differences)
+    ci_low, ci_high = _paired_mean_difference_bootstrap_ci(differences)
     effect = _effect_size(differences)
     direction = "positive" if mean_diff > 0 else ("negative" if mean_diff < 0 else "neutral")
 
     return {
         "architecture_type": architecture_type,
+        "model_name": model_name,
+        "dataset_name": dataset_name,
+        "config_name": config_name,
         "metric_name": metric_name,
         "baseline_a": baseline_a,
         "baseline_b": baseline_b,
+        "analysis_tier": "confirmatory" if primary else "descriptive",
+        "downgraded_to_descriptive": False,
         "pairing_used": "paired_by_seed",
         "seeds_included": seeds,
         "n_pairs": len(seeds),
-        "test_name": "wilcoxon_signed_rank",
+        "test_name": "wilcoxon_signed_rank_scipy",
         "raw_p_value": wilcoxon_p,
         "mean_difference": mean_diff,
         "median_difference": median_diff,
+        "mean_difference_ci_low": ci_low,
+        "mean_difference_ci_high": ci_high,
         "effect_size": effect,
         "direction_of_effect": direction,
         "paired_ttest_p_value": _paired_t_pvalue(differences),
-        "notes": "Primary inference uses Wilcoxon signed-rank; paired t-test is sensitivity only.",
+        "notes": "Primary inference uses scipy.stats.wilcoxon (two-sided, zero_method='wilcox'); scipy.stats.ttest_rel is sensitivity-only.",
     }
 
 
@@ -303,6 +389,7 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
     efficiency_json = output_dir / "statistical_analysis_efficiency.json"
     confirmatory_csv = output_dir / "statistical_analysis_confirmatory.csv"
     report_path = output_dir / "statistical_analysis_report.md"
+    metadata_path = output_dir / "statistical_analysis_metadata.json"
 
     confirmatory_json.write_text(json.dumps(confirmatory_rows, indent=2), encoding="utf-8")
     secondary_json.write_text(json.dumps(secondary_rows, indent=2), encoding="utf-8")
@@ -311,9 +398,14 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
     with confirmatory_csv.open("w", encoding="utf-8", newline="") as fp:
         fieldnames = [
             "architecture_type",
+            "model_name",
+            "dataset_name",
+            "config_name",
             "metric_name",
             "baseline_a",
             "baseline_b",
+            "analysis_tier",
+            "downgraded_to_descriptive",
             "pairing_used",
             "seeds_included",
             "n_pairs",
@@ -323,6 +415,8 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
             "reject_after_holm",
             "mean_difference",
             "median_difference",
+            "mean_difference_ci_low",
+            "mean_difference_ci_high",
             "effect_size",
             "direction_of_effect",
             "paired_ttest_p_value",
@@ -340,6 +434,23 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
         efficiency_rows=efficiency_rows,
     )
 
+    metadata = {
+        "primary_confirmatory_outcomes": PRIMARY_CONFIRMATORY_OUTCOMES,
+        "planned_contrasts": [asdict(c) for c in contrasts],
+        "family_wise_error_method": CONFIRMATORY_FWER_METHOD,
+        "alpha": ALPHA,
+        "statistical_test_backend": {
+            "library": "scipy",
+            "confirmatory_test": "scipy.stats.wilcoxon (two-sided, zero_method='wilcox', method='auto')",
+            "sensitivity_test": "scipy.stats.ttest_rel (two-sided)",
+            "ci_method": "bootstrap percentile CI for paired mean difference (5000 resamples, RNG seed=0)",
+        },
+        "allow_unpaired": allow_unpaired,
+        "any_rows_downgraded_to_descriptive": any(bool(r.get("downgraded_to_descriptive")) for r in confirmatory_rows),
+        "any_pairing_failures": any(r.get("pairing_used") == "unpaired" for r in confirmatory_rows),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
     return {
         "input": str(input_path),
         "n_runs": len(runs),
@@ -353,6 +464,7 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
             "secondary_json": str(secondary_json),
             "efficiency_json": str(efficiency_json),
             "report_md": str(report_path),
+            "metadata_json": str(metadata_path),
         },
     }
 
