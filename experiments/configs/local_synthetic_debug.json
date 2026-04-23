@@ -1,0 +1,67 @@
+{
+  "baseline": "local_synthetic_debug",
+  "model": {
+    "name": "test/tiny",
+    "tokenizer_name": null,
+    "trust_remote_code": false,
+    "dtype": "float32",
+    "device_map": null,
+    "max_seq_length": 128,
+    "load_in_4bit": false,
+    "bnb_4bit_compute_dtype": "float32",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": false,
+    "architecture_type": "dense",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": false,
+      "rank": 8,
+      "alpha": 16,
+      "dropout": 0.0,
+      "target_modules": []
+    },
+    "latent_refiner": {
+      "enabled": false,
+      "num_recurrent_steps": 1,
+      "recurrence_mode": "none",
+      "adapter_sharing": "none",
+      "hidden_size": 64,
+      "adapter": {
+        "enabled": false,
+        "rank": 8,
+        "alpha": 16,
+        "dropout": 0.0
+      }
+    }
+  },
+  "dataset": {
+    "name": "test_synthetic_stage_dataset",
+    "settings": {
+      "subset_size": 24,
+      "eval_fraction": 0.25,
+      "seed": 7,
+      "sequence_length": 12,
+      "split": "synthetic"
+    }
+  },
+  "training": {
+    "batch_size": 4,
+    "num_epochs": 1,
+    "max_steps": 4,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0,
+    "seed": 7,
+    "eval_interval_steps": 2,
+    "checkpoint_interval_steps": 4,
+    "eval_enabled": true,
+    "deterministic": true
+  },
+  "output": {
+    "dir": "outputs/local_synthetic_debug"
+  },
+  "run_notes": [
+    "NON-REPORTABLE",
+    "local CPU-friendly debug preset",
+    "intended for setup verification"
+  ]
+}
