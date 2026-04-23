@@ -10,6 +10,7 @@ import re
 import torch
 from torch.utils.data import Dataset
 
+from training.answer_eval import extract_numeric_values, normalize_answer_text
 
 Example = dict[str, torch.Tensor | str]
 
@@ -71,16 +72,6 @@ def _char_spans_to_token_mask(offset_mapping: list[tuple[int, int]], span: tuple
     return torch.tensor(mask, dtype=torch.bool)
 
 
-def _normalize_numeric_text(text: str) -> str | None:
-    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
-    if not match:
-        return None
-    try:
-        return str(float(match.group(0)))
-    except ValueError:
-        return None
-
-
 def build_staged_examples_from_hf(
     *,
     subset_size: int,
@@ -104,6 +95,8 @@ def build_staged_examples_from_hf(
     filtered_missing_stage3 = 0
     stage2_non_empty = 0
     stage3_non_empty = 0
+    valid_answer_spans = 0
+    numeric_answers = 0
 
     for idx in selected:
         row = ds[int(idx)]
@@ -128,11 +121,11 @@ def build_staged_examples_from_hf(
         stage1_mask = _char_spans_to_token_mask(offsets, stage1_span)
         stage2_mask = _char_spans_to_token_mask(offsets, stage2_span)
         stage3_mask = _char_spans_to_token_mask(offsets, stage3_span)
-        final_answer_mask = _char_spans_to_token_mask(offsets, answer_span)
+        answer_mask = _char_spans_to_token_mask(offsets, answer_span)
 
         stage2_mask = stage2_mask & ~stage3_mask
         stage1_mask = stage1_mask & ~stage2_mask & ~stage3_mask
-        final_answer_mask = final_answer_mask & stage3_mask
+        answer_mask = answer_mask & stage3_mask
 
         if int(stage3_mask.sum().item()) == 0:
             filtered_missing_stage3 += 1
@@ -141,10 +134,14 @@ def build_staged_examples_from_hf(
         if int(stage2_mask.sum().item()) > 0:
             stage2_non_empty += 1
         stage3_non_empty += 1
+        if int(answer_mask.sum().item()) > 0:
+            valid_answer_spans += 1
 
         labels = input_ids.clone()
         final_answer_text = answer.strip()
-        normalized_numeric_answer = _normalize_numeric_text(final_answer_text)
+        numeric_values = extract_numeric_values(final_answer_text)
+        if numeric_values:
+            numeric_answers += 1
 
         examples.append(
             {
@@ -153,10 +150,10 @@ def build_staged_examples_from_hf(
                 "stage1_mask": stage1_mask,
                 "stage2_mask": stage2_mask,
                 "stage3_mask": stage3_mask,
-                "final_answer_mask": final_answer_mask,
+                "answer_mask": answer_mask,
+                "final_answer_mask": answer_mask,
                 "answer_text": final_answer_text,
-                "answer_text_normalized": final_answer_text.lower().strip(),
-                "answer_numeric_normalized": normalized_numeric_answer or "",
+                "answer_text_normalized": normalize_answer_text(final_answer_text),
             }
         )
 
@@ -171,6 +168,9 @@ def build_staged_examples_from_hf(
         "filtered_examples_missing_stage3_tokens": filtered_missing_stage3,
         "examples_with_non_empty_stage2": stage2_non_empty,
         "examples_with_non_empty_stage3": stage3_non_empty,
+        "samples_with_valid_answer_spans": valid_answer_spans,
+        "samples_with_numeric_answers": numeric_answers,
+        "samples_excluded_or_degraded": filtered_empty + filtered_missing_stage3 + (len(examples) - valid_answer_spans),
     }
     return examples, stats
 
@@ -195,10 +195,10 @@ def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: 
                 "stage1_mask": s1,
                 "stage2_mask": s2,
                 "stage3_mask": s3,
+                "answer_mask": s3.clone(),
                 "final_answer_mask": s3.clone(),
                 "answer_text": "7",
-                "answer_text_normalized": "7",
-                "answer_numeric_normalized": "7.0",
+                "answer_text_normalized": normalize_answer_text("7"),
             }
         )
     return out
@@ -221,12 +221,21 @@ def collate_token_sequences(batch: list[Example], *, pad_token_id: int) -> dict[
         attention_mask[i, :length] = 1
 
     collated: dict[str, torch.Tensor | list[str]] = {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
-    for key in ("stage1_mask", "stage2_mask", "stage3_mask", "final_answer_mask"):
+    for key in ("stage1_mask", "stage2_mask", "stage3_mask"):
         collated[key] = torch.stack([_pad_1d(item[key].bool(), 0).bool() for item in batch])
+    collated["answer_mask"] = torch.stack(
+        [
+            _pad_1d(
+                (item["answer_mask"] if "answer_mask" in item else item["final_answer_mask"]).bool(),
+                0,
+            ).bool()
+            for item in batch
+        ]
+    )
+    collated["final_answer_mask"] = collated["answer_mask"]
 
     collated["answer_text"] = [str(item.get("answer_text", "")) for item in batch]
     collated["answer_text_normalized"] = [str(item.get("answer_text_normalized", "")).strip() for item in batch]
-    collated["answer_numeric_normalized"] = [str(item.get("answer_numeric_normalized", "")).strip() for item in batch]
     return collated
 
 
@@ -262,6 +271,9 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
             "filtered_examples_missing_stage3_tokens": 0,
             "examples_with_non_empty_stage2": total_examples,
             "examples_with_non_empty_stage3": total_examples,
+            "samples_with_valid_answer_spans": total_examples,
+            "samples_with_numeric_answers": total_examples,
+            "samples_excluded_or_degraded": 0,
         }
         return DatasetBundle(train=SequenceDataset(train), eval=SequenceDataset(evalv), preprocessing_summary=summary)
 

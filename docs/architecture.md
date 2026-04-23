@@ -6,4 +6,4 @@ Stage-aware recurrence receives explicit stage masks in every batch and aligns r
 
 Answer-level evaluation is deliberately decoupled from stage-level supervision:
 - `stage3_mask` spans the full Stage 3 section (`Final Answer:` header + answer text) for stage token diagnostics.
-- `final_answer_mask` spans answer tokens only for final-answer string/numeric metrics.
+- `answer_mask` (legacy alias `final_answer_mask`) spans answer tokens only for final-answer string/numeric metrics.

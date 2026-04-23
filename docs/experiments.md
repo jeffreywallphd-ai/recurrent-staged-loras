@@ -37,13 +37,16 @@ Answer extraction order:
 - else mark stage-3 content empty and filter the row.
 
 Token-level stage masks are created from tokenizer offset mappings and made disjoint (`stage1_mask`, `stage2_mask`, `stage3_mask`).
-An explicit `final_answer_mask` is also created for answer-only tokens inside Stage 3, excluding the literal `Final Answer:` header.
+An explicit `answer_mask` (legacy alias: `final_answer_mask`) is also created for answer-only tokens inside Stage 3, excluding the literal `Final Answer:` header.
 Rows without stage-3 tokens are filtered.
 
 Per-run preprocessing statistics are written to `dataset_preprocessing_summary.json`, including:
 - kept examples,
 - filtered examples (empty/problem-response missing, stage-3 missing),
-- examples with non-empty stage-2 and stage-3.
+- examples with non-empty stage-2 and stage-3,
+- samples with valid answer-only spans,
+- samples with numeric answers,
+- samples excluded or degraded (filtered + empty answer-span after tokenization).
 
 ## Train/eval protocol
 
@@ -57,19 +60,20 @@ Per-run preprocessing statistics are written to `dataset_preprocessing_summary.j
 
 - `stage_2_token_accuracy`: token accuracy on `stage2_mask` (reasoning section).
 - `stage_3_token_accuracy`: token accuracy on `stage3_mask` (full Stage 3 section, including `Final Answer:` header tokens).
-- `final_answer_accuracy`: normalized string match on decoded `final_answer_mask` span only. Normalization lowercases, removes `$`, unwraps simple `\\boxed{...}`, squashes whitespace, and strips trailing punctuation.
-- `final_answer_exact_match`: strict raw-string equality between decoded `final_answer_mask` prediction and extracted answer text.
-- `normalized_numeric_answer_accuracy`: numeric comparison using float normalization from decoded `final_answer_mask` prediction vs normalized numeric gold label.
-- Reviewer-facing aliases are also written: `answer_span_normalized_accuracy`, `answer_span_exact_match`, and `answer_span_numeric_accuracy` (same values as the three answer metrics above).
+- `final_answer_accuracy`: compatibility metric; normalized string match on decoded `answer_mask` span only.
+- `final_answer_exact_match`: strict equality on decoded raw answer strings (only outer whitespace trimmed).
+- `final_answer_normalized_match`: reviewer-facing normalized string metric using layered normalization (case fold, math-format cleanup including `$...$` and `\\boxed{...}`, punctuation/spacing cleanup, semantic numeric canonicalization such as `2`, `2.0`, `2.`, and simple fraction/decimal equivalence where feasible).
+- `normalized_numeric_answer_accuracy`: robust numeric answer metric on `answer_mask` spans. All numeric values are extracted (integers, decimals, scientific notation, signed values, simple fractions). A sample is correct when at least one predicted numeric value matches at least one target numeric value within tolerance (`abs_tol=1e-6`, `rel_tol=1e-6`). Multi-value target handling currently uses rule=`any` (at least one match); this rule is explicitly logged.
+- Reviewer-facing aliases are also written: `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, and `answer_span_numeric_accuracy`.
 
 Limitations:
-- String normalization is intentionally conservative and does not parse full symbolic/math equivalence.
-- Numeric matching uses first detectable number and cannot validate multi-value expressions.
+- Normalization is still text-based and does not prove full symbolic equivalence for algebraic expressions.
+- Multi-value numeric validation defaults to `any`-match (not full set equivalence); explicit counts are emitted for transparency.
 
 ## Canonical run-level metrics schema (`metrics.json`)
 
 Official fields:
-`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
+`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
 
 Each run also writes `answer_eval_diagnostics.json` with answer-scoring counts and skip reasons.
 

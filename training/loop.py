@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
 from typing import Any
-import re
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from models.staged_model import StagedLatentAdaptationModel
+from training.answer_eval import NUMERIC_ABS_TOL, NUMERIC_MULTI_VALUE_RULE, normalize_answer_text, numeric_match
 
 
 @dataclass(slots=True)
@@ -24,6 +25,7 @@ class EvalResult:
     stage_3_token_accuracy: float | None
     final_answer_accuracy: float | None
     final_answer_exact_match: float | None
+    final_answer_normalized_match: float | None
     normalized_numeric_answer_accuracy: float | None
     answer_eval_string_count: int
     answer_eval_numeric_count: int
@@ -31,6 +33,17 @@ class EvalResult:
     answer_eval_skipped_no_answer_span: int
     answer_eval_skipped_missing_answer_text: int
     answer_eval_skipped_missing_numeric_target: int
+    answer_eval_normalized_match_count: int
+    answer_eval_exact_match_count: int
+    answer_eval_numeric_match_count: int
+    answer_eval_multi_value_target_count: int
+    answer_eval_numeric_pred_value_count: int
+    answer_eval_numeric_target_value_count: int
+    answer_eval_numeric_value_match_count: int
+    answer_eval_string_match_numeric_miss_count: int
+    answer_eval_normalized_only_count: int
+    answer_eval_skipped_ambiguous_numeric: int
+    answer_eval_length_histogram: dict[str, int]
 
 
 def _safe_perplexity(loss: float) -> float:
@@ -44,26 +57,6 @@ def _masked_ce(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -
     per_tok = F.cross_entropy(logits.reshape(-1, vocab), labels.reshape(-1), reduction="none").reshape_as(labels)
     denom = mask.sum().clamp(min=1)
     return (per_tok * mask.float()).sum() / denom
-
-
-def _normalize_text(text: str) -> str:
-    # Canonicalized text metric used for final_answer_accuracy.
-    normalized = text.strip().lower()
-    normalized = re.sub(r"\$", "", normalized)
-    normalized = re.sub(r"\\boxed\{([^}]*)\}", r"\1", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
-    normalized = normalized.strip(" .,:;!?\n\t")
-    return normalized
-
-
-def _normalize_numeric(text: str) -> str | None:
-    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
-    if not match:
-        return None
-    try:
-        return str(float(match.group(0)))
-    except ValueError:
-        return None
 
 
 def _decode_answer_tokens(token_ids: torch.Tensor, tokenizer: Any | None) -> str:
@@ -154,7 +147,17 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
 
     normalized_correct = normalized_total = 0
     exact_correct = exact_total = 0
+    normalized_match_correct = normalized_match_total = 0
     numeric_correct = numeric_total = 0
+    numeric_match_count = 0
+    multi_value_target_count = 0
+    numeric_pred_value_count = 0
+    numeric_target_value_count = 0
+    numeric_value_match_count = 0
+    string_match_numeric_miss_count = 0
+    normalized_only_count = 0
+    skipped_ambiguous_numeric = 0
+    answer_length_bins: Counter[str] = Counter()
 
     skipped_no_stage3 = 0
     skipped_no_answer_span = 0
@@ -168,13 +171,13 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
             labels = batch["labels"][:, 1:]
             stage2_mask = batch["stage2_mask"][:, 1:]
             stage3_mask = batch["stage3_mask"][:, 1:]
-            final_answer_mask = batch["final_answer_mask"][:, 1:]
+            answer_mask = batch["answer_mask"][:, 1:]
             assert isinstance(input_ids, torch.Tensor)
             assert isinstance(attention_mask, torch.Tensor)
             assert isinstance(labels, torch.Tensor)
             assert isinstance(stage2_mask, torch.Tensor)
             assert isinstance(stage3_mask, torch.Tensor)
-            assert isinstance(final_answer_mask, torch.Tensor)
+            assert isinstance(answer_mask, torch.Tensor)
 
             out = model(input_ids=input_ids, attention_mask=attention_mask)
             logits = out.logits[:, :-1, :]
@@ -192,20 +195,28 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
 
             target_texts = batch.get("answer_text", [])
             target_texts_normalized = batch.get("answer_text_normalized", [])
-            target_numeric = batch.get("answer_numeric_normalized", [])
             for i in range(labels.shape[0]):
                 sample_mask = stage3_mask[i]
                 if int(sample_mask.sum().item()) == 0:
                     skipped_no_stage3 += 1
                     continue
 
-                answer_mask = final_answer_mask[i]
-                if int(answer_mask.sum().item()) == 0:
+                sample_answer_mask = answer_mask[i]
+                if int(sample_answer_mask.sum().item()) == 0:
                     skipped_no_answer_span += 1
                     continue
 
-                pred_answer = _decode_answer_tokens(pred[i][answer_mask], tokenizer)
-                pred_norm = _normalize_text(pred_answer)
+                pred_answer = _decode_answer_tokens(pred[i][sample_answer_mask], tokenizer)
+                pred_norm = normalize_answer_text(pred_answer)
+                answer_len = len(pred_answer.strip())
+                if answer_len <= 4:
+                    answer_length_bins["0-4"] += 1
+                elif answer_len <= 16:
+                    answer_length_bins["5-16"] += 1
+                elif answer_len <= 64:
+                    answer_length_bins["17-64"] += 1
+                else:
+                    answer_length_bins["65+"] += 1
 
                 gold_raw = str(target_texts[i]).strip() if i < len(target_texts) else ""
                 gold_norm = str(target_texts_normalized[i]).strip() if i < len(target_texts_normalized) else ""
@@ -220,15 +231,33 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                     exact_total += 1
                     if pred_answer.strip() == gold_raw:
                         exact_correct += 1
+                    normalized_match_total += 1
+                    gold_norm_eval = normalize_answer_text(gold_raw)
+                    if pred_norm == gold_norm_eval:
+                        normalized_match_correct += 1
+                    if pred_norm == gold_norm_eval and pred_answer.strip() != gold_raw:
+                        normalized_only_count += 1
 
-                gold_num = str(target_numeric[i]).strip() if i < len(target_numeric) else ""
-                if gold_num:
-                    numeric_total += 1
-                    pred_num = _normalize_numeric(pred_answer)
-                    if pred_num == gold_num:
-                        numeric_correct += 1
-                else:
+                if not gold_raw:
                     skipped_missing_numeric_target += 1
+                    continue
+
+                numeric_total += 1
+                num_result = numeric_match(pred_answer, gold_raw)
+                if num_result.skipped:
+                    skipped_missing_numeric_target += 1
+                    skipped_ambiguous_numeric += 1
+                    continue
+                numeric_pred_value_count += num_result.predicted_count
+                numeric_target_value_count += num_result.target_count
+                numeric_value_match_count += num_result.match_count
+                if num_result.is_multi_value_target:
+                    multi_value_target_count += 1
+                if num_result.is_match:
+                    numeric_correct += 1
+                    numeric_match_count += 1
+                if pred_norm == normalize_answer_text(gold_raw) and not num_result.is_match:
+                    string_match_numeric_miss_count += 1
 
     model.train()
     loss = float(sum(losses) / len(losses)) if losses else float("nan")
@@ -236,6 +265,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     stage3_acc = float(s3_correct / s3_total) if s3_total > 0 else None
     final_acc = float(normalized_correct / normalized_total) if normalized_total > 0 else None
     exact = float(exact_correct / exact_total) if exact_total > 0 else None
+    normalized_match = float(normalized_match_correct / normalized_match_total) if normalized_match_total > 0 else None
     numeric_acc = float(numeric_correct / numeric_total) if numeric_total > 0 else None
     return EvalResult(
         loss=loss,
@@ -245,6 +275,7 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         stage_3_token_accuracy=stage3_acc,
         final_answer_accuracy=final_acc,
         final_answer_exact_match=exact,
+        final_answer_normalized_match=normalized_match,
         normalized_numeric_answer_accuracy=numeric_acc,
         answer_eval_string_count=normalized_total,
         answer_eval_numeric_count=numeric_total,
@@ -252,6 +283,17 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         answer_eval_skipped_no_answer_span=skipped_no_answer_span,
         answer_eval_skipped_missing_answer_text=skipped_missing_answer_text,
         answer_eval_skipped_missing_numeric_target=skipped_missing_numeric_target,
+        answer_eval_normalized_match_count=normalized_match_correct,
+        answer_eval_exact_match_count=exact_correct,
+        answer_eval_numeric_match_count=numeric_match_count,
+        answer_eval_multi_value_target_count=multi_value_target_count,
+        answer_eval_numeric_pred_value_count=numeric_pred_value_count,
+        answer_eval_numeric_target_value_count=numeric_target_value_count,
+        answer_eval_numeric_value_match_count=numeric_value_match_count,
+        answer_eval_string_match_numeric_miss_count=string_match_numeric_miss_count,
+        answer_eval_normalized_only_count=normalized_only_count,
+        answer_eval_skipped_ambiguous_numeric=skipped_ambiguous_numeric,
+        answer_eval_length_histogram=dict(answer_length_bins),
     )
 
 
@@ -327,6 +369,7 @@ def run_training(
         "stage_3_token_accuracy": last_eval.stage_3_token_accuracy,
         "final_answer_accuracy": last_eval.final_answer_accuracy,
         "final_answer_exact_match": last_eval.final_answer_exact_match,
+        "final_answer_normalized_match": last_eval.final_answer_normalized_match,
         "normalized_numeric_answer_accuracy": last_eval.normalized_numeric_answer_accuracy,
         "answer_eval_string_count": int(last_eval.answer_eval_string_count),
         "answer_eval_numeric_count": int(last_eval.answer_eval_numeric_count),
@@ -334,4 +377,17 @@ def run_training(
         "answer_eval_skipped_no_answer_span": int(last_eval.answer_eval_skipped_no_answer_span),
         "answer_eval_skipped_missing_answer_text": int(last_eval.answer_eval_skipped_missing_answer_text),
         "answer_eval_skipped_missing_numeric_target": int(last_eval.answer_eval_skipped_missing_numeric_target),
+        "answer_eval_normalized_match_count": int(last_eval.answer_eval_normalized_match_count),
+        "answer_eval_exact_match_count": int(last_eval.answer_eval_exact_match_count),
+        "answer_eval_numeric_match_count": int(last_eval.answer_eval_numeric_match_count),
+        "answer_eval_multi_value_target_count": int(last_eval.answer_eval_multi_value_target_count),
+        "answer_eval_numeric_pred_value_count": int(last_eval.answer_eval_numeric_pred_value_count),
+        "answer_eval_numeric_target_value_count": int(last_eval.answer_eval_numeric_target_value_count),
+        "answer_eval_numeric_value_match_count": int(last_eval.answer_eval_numeric_value_match_count),
+        "answer_eval_string_match_numeric_miss_count": int(last_eval.answer_eval_string_match_numeric_miss_count),
+        "answer_eval_normalized_only_count": int(last_eval.answer_eval_normalized_only_count),
+        "answer_eval_skipped_ambiguous_numeric": int(last_eval.answer_eval_skipped_ambiguous_numeric),
+        "answer_eval_numeric_abs_tolerance": float(NUMERIC_ABS_TOL),
+        "answer_eval_numeric_multi_value_rule": NUMERIC_MULTI_VALUE_RULE,
+        "answer_eval_answer_length_histogram": dict(last_eval.answer_eval_length_histogram),
     }

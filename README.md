@@ -43,6 +43,6 @@ python scripts/run_all_experiments.py --config-dir experiments/configs --seeds 1
 - `docs/README.md`
 - `docs/architecture.md`
 - `docs/baselines.md`
-- `docs/experiments.md`
+- `docs/experiments.md` (staging construction + strict/normalized/numeric answer-eval protocol)
 - `docs/study_matrix.md`
 - `analysis/README.md`
