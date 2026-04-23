@@ -36,6 +36,11 @@ def _variant(baseline: str, architecture_type: str = "dense"):
     )
 
 
+def _first_refiner_param(model):
+    assert model.refiner is not None
+    return next(model.refiner.parameters())
+
+
 def test_dense_and_moe_defaults_build() -> None:
     dense_model = build_model_from_variant(_variant("base", "dense"))
     moe_model = build_model_from_variant(_variant("base", "moe"))
@@ -48,3 +53,57 @@ def test_stage_aware_forward_path_has_per_step_states() -> None:
     x = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
     out = model(input_ids=x, attention_mask=torch.ones_like(x))
     assert len(out.extras["per_step"]) == 3
+
+
+def test_bfloat16_backbone_alignment_prevents_refiner_matmul_mismatch() -> None:
+    variant = _variant("stage_specialized_recurrence")
+    variant.base.dtype = "bfloat16"
+    model = build_model_from_variant(variant)
+    x = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+    out = model(input_ids=x, attention_mask=torch.ones_like(x))
+    assert out.refined_hidden_states.dtype == torch.bfloat16
+    assert _first_refiner_param(model).dtype == torch.bfloat16
+
+
+def test_stage_specialized_adapter_bank_matches_hidden_state_dtype_and_device() -> None:
+    variant = _variant("stage_specialized_recurrence")
+    variant.base.dtype = "bfloat16"
+    model = build_model_from_variant(variant)
+    x = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    out = model(input_ids=x, attention_mask=torch.ones_like(x))
+    assert out.refined_hidden_states.dtype == torch.bfloat16
+    for adapter in model.refiner.adapter_bank.adapters:  # type: ignore[union-attr]
+        param = next(adapter.parameters())
+        assert param.dtype == torch.bfloat16
+        assert param.device == out.refined_hidden_states.device
+
+
+def test_shared_recurrence_adapter_matches_hidden_state_dtype_and_device() -> None:
+    variant = _variant("shared_recurrence")
+    variant.base.dtype = "bfloat16"
+    model = build_model_from_variant(variant)
+    x = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    out = model(input_ids=x, attention_mask=torch.ones_like(x))
+    assert out.refined_hidden_states.dtype == torch.bfloat16
+    adapter_param = next(model.refiner.adapter_bank.adapters[0].parameters())  # type: ignore[union-attr]
+    assert adapter_param.dtype == torch.bfloat16
+    assert adapter_param.device == out.refined_hidden_states.device
+
+
+def test_latent_refiner_only_matches_hidden_state_dtype_and_device() -> None:
+    variant = _variant("latent_refiner_only")
+    variant.base.dtype = "bfloat16"
+    model = build_model_from_variant(variant)
+    x = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    out = model(input_ids=x, attention_mask=torch.ones_like(x))
+    assert out.refined_hidden_states.dtype == torch.bfloat16
+    assert _first_refiner_param(model).dtype == torch.bfloat16
+
+
+def test_float32_backbone_still_works() -> None:
+    variant = _variant("shared_recurrence")
+    variant.base.dtype = "float32"
+    model = build_model_from_variant(variant)
+    x = torch.tensor([[1, 2, 3]], dtype=torch.long)
+    out = model(input_ids=x, attention_mask=torch.ones_like(x))
+    assert out.refined_hidden_states.dtype == torch.float32

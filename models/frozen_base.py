@@ -64,6 +64,9 @@ class FrozenBaseCausalLM(nn.Module):
         if self.model_name.startswith("test/"):
             self.backend = "internal"
             self.internal_model = TinyInternalCausalLM(vocab_size=self.vocab_size, hidden_size=self.hidden_size)
+            # Keep test backend behavior aligned with HF runtimes where hidden states
+            # often come out as bf16/fp16 while new modules default to fp32.
+            self.internal_model = self.internal_model.to(dtype=self._torch_dtype(self.config.dtype))
             if self.config.freeze_base:
                 for p in self.internal_model.parameters():
                     p.requires_grad = False
@@ -163,3 +166,23 @@ class FrozenBaseCausalLM(nn.Module):
         if self.hf_model is None:
             raise RuntimeError("HF backend missing")
         return self.hf_model.lm_head(refined_hidden_states)
+
+    def runtime_dtype_device(self) -> tuple[torch.dtype, torch.device]:
+        """Return dtype/device used by backbone/LM-head parameters."""
+        if self.internal_model is not None:
+            param = next(self.internal_model.parameters())
+            return param.dtype, param.device
+        if self.hf_model is None:
+            raise RuntimeError("HF backend missing")
+        param = next(self.hf_model.parameters())
+        return param.dtype, param.device
+
+    def lm_head_dtype_device(self) -> tuple[torch.dtype, torch.device]:
+        """Return dtype/device expected by LM head projection."""
+        if self.internal_model is not None:
+            param = next(self.internal_model.lm_head.parameters())
+            return param.dtype, param.device
+        if self.hf_model is None:
+            raise RuntimeError("HF backend missing")
+        param = next(self.hf_model.lm_head.parameters())
+        return param.dtype, param.device
