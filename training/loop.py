@@ -119,6 +119,8 @@ def train_epoch(
     eval_interval_steps: int,
     eval_loader: DataLoader[dict[str, torch.Tensor | list[str]]],
     tokenizer: Any | None,
+    max_train_tokens: int | None = None,
+    max_wall_time_seconds: float | None = None,
 ) -> tuple[float, int, float, int, list[EvalResult]]:
     model.train()
     step = global_step_start
@@ -129,6 +131,10 @@ def train_epoch(
 
     for batch in dataloader:
         if step >= max_steps:
+            break
+        if max_train_tokens is not None and tokens_seen >= max_train_tokens:
+            break
+        if max_wall_time_seconds is not None and wall >= max_wall_time_seconds:
             break
         start = perf_counter()
         labels = batch["labels"][:, 1:]
@@ -356,6 +362,8 @@ def run_training(
     eval_interval_steps: int,
     eval_enabled: bool,
     tokenizer: Any | None = None,
+    max_train_tokens: int | None = None,
+    max_wall_time_seconds: float | None = None,
 ) -> dict[str, float | int]:
     run_start = perf_counter()
     global_steps = 0
@@ -376,6 +384,8 @@ def run_training(
             eval_interval_steps=eval_interval_steps,
             eval_loader=eval_loader,
             tokenizer=tokenizer,
+            max_train_tokens=max_train_tokens,
+            max_wall_time_seconds=max_wall_time_seconds,
         )
         global_steps += done
         tokens_train += tokens
@@ -383,6 +393,10 @@ def run_training(
         epochs_completed += 1
         eval_results.extend(interval_evals)
         if global_steps >= max_steps:
+            break
+        if max_train_tokens is not None and tokens_train >= max_train_tokens:
+            break
+        if max_wall_time_seconds is not None and wall_train >= max_wall_time_seconds:
             break
 
     if eval_enabled:

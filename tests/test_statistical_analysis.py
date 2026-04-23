@@ -59,6 +59,10 @@ def _make_run(
         "tokens_per_second_train": 200.0 + (offset * 10),
         "trainable_param_fraction": 0.02,
         "effective_forward_passes_per_example": 3.0,
+        "compute_control_enabled": True,
+        "compute_control_mode": "effective_forward_passes",
+        "ablation_recurrent_steps": None,
+        "ablation_lora_rank": None,
     }
 
 
@@ -184,3 +188,19 @@ def test_markdown_report_contains_key_sections(tmp_path: Path) -> None:
     assert "mean_diff_95ci" in report
     assert "## Secondary outcomes (descriptive)" in report
     assert "## Efficiency outcomes (descriptive)" in report
+
+
+def test_statistical_filters_support_compute_control_and_ablation(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    runs[0]["ablation_recurrent_steps"] = 2
+    runs[0]["ablation_lora_rank"] = 8
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    result = run_analysis(
+        input_path=summary,
+        output_dir=out_dir,
+        allow_unpaired=False,
+        compute_controlled_only=True,
+        ablation_only=False,
+    )
+    assert result["confirmatory_rows"] > 0

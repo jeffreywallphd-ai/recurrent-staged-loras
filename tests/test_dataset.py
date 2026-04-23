@@ -1,6 +1,6 @@
 import torch
 
-from data.dataset import _build_staged_text, build_train_eval_datasets, collate_token_sequences
+from data.dataset import _build_staged_text, build_external_eval_dataset, build_train_eval_datasets, collate_token_sequences
 from training.answer_eval import (
     NUMERIC_MULTI_VALUE_RULE,
     extract_numeric_values,
@@ -131,3 +131,23 @@ def test_symbolic_equivalence_success_and_parse_failure() -> None:
     assert fail.attempted is True
     assert fail.parse_success is False
     assert fail.is_match is False
+
+
+def test_external_dataset_loader_builds_answer_mask(monkeypatch) -> None:
+    class _FakeTokenizer:
+        def __call__(self, text, truncation, max_length, return_offsets_mapping, add_special_tokens):
+            del truncation, max_length, return_offsets_mapping, add_special_tokens
+            ids = [min(ord(c), 120) for c in text]
+            return {"input_ids": ids, "offset_mapping": [(i, i + 1) for i in range(len(text))]}
+
+    fake_rows = [{"question": "2+2=?", "answer": "#### 4"}, {"question": "3+3=?", "answer": "#### 6"}]
+
+    def _fake_loader(*_args, **_kwargs):
+        return fake_rows
+
+    monkeypatch.setattr("datasets.load_dataset", _fake_loader)
+    bundle = build_external_eval_dataset("gsm8k", {"split": "test", "subset_size": 2, "seed": 0, "max_seq_length": 64}, _FakeTokenizer())
+    assert len(bundle.eval) == 2
+    ex = bundle.eval[0]
+    assert int(ex["answer_mask"].sum().item()) > 0
+    assert ex["answer_text"] in {"4", "6"}
