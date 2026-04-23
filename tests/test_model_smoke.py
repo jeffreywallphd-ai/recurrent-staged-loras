@@ -107,3 +107,8 @@ def test_float32_backbone_still_works() -> None:
     x = torch.tensor([[1, 2, 3]], dtype=torch.long)
     out = model(input_ids=x, attention_mask=torch.ones_like(x))
     assert out.refined_hidden_states.dtype == torch.float32
+
+
+def test_input_device_resolves_from_embedding_layer() -> None:
+    model = build_model_from_variant(_variant("base"))
+    assert model.base_model.input_device == next(model.base_model.internal_model.embed_tokens.parameters()).device  # type: ignore[union-attr]
