@@ -32,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-scope", choices=["primary", "external", "all"], default="primary")
     parser.add_argument("--compute-controlled-only", action="store_true")
     parser.add_argument("--ablation-only", action="store_true")
+    parser.add_argument("--allow-ablations-in-analysis", action="store_true")
+    parser.add_argument("--allow-pilot-runs-in-analysis", action="store_true")
+    parser.add_argument("--allow-external-in-confirmatory", action="store_true")
     return parser.parse_args()
 
 
@@ -76,6 +79,45 @@ def _validate_runs(runs: list[dict[str, object]]) -> None:
     missing = [m for m in required_metrics if all(_coerce_float(r.get(m)) is None for r in runs)]
     if missing:
         raise ValueError(f"Required metric(s) missing from all runs: {', '.join(missing)}")
+
+
+def _is_ablation_row(row: dict[str, object]) -> bool:
+    return row.get("ablation_recurrent_steps") not in (None, "") or row.get("ablation_lora_rank") not in (None, "")
+
+
+def _is_pilot_row(row: dict[str, object]) -> bool:
+    config_name = str(row.get("config_name", ""))
+    return config_name.endswith("_pilot.json")
+
+
+def _require_confirmatory_purity(
+    runs: list[dict[str, object]],
+    *,
+    allow_ablations_in_analysis: bool,
+    allow_pilot_runs_in_analysis: bool,
+    allow_external_in_confirmatory: bool,
+) -> None:
+    if not allow_ablations_in_analysis:
+        ablation_runs = [r for r in runs if _is_ablation_row(r)]
+        if ablation_runs:
+            raise ValueError(
+                "Confirmatory analysis received ablation-derived runs. "
+                "Set --allow-ablations-in-analysis to include them explicitly."
+            )
+    if not allow_pilot_runs_in_analysis:
+        pilot_runs = [r for r in runs if _is_pilot_row(r)]
+        if pilot_runs:
+            raise ValueError(
+                "Confirmatory analysis received pilot runs (*_pilot.json). "
+                "Set --allow-pilot-runs-in-analysis to include them explicitly."
+            )
+    if not allow_external_in_confirmatory:
+        external = [r for r in runs if str(r.get("dataset_type", "primary")) == "external"]
+        if external:
+            raise ValueError(
+                "Confirmatory analysis received external-evaluation rows. "
+                "Use descriptive external mode (e.g., --dataset-scope external) or set --allow-external-in-confirmatory."
+            )
 
 
 ConditionSeedKey = tuple[str, str, str, str, str, int]
@@ -299,10 +341,24 @@ def _compare_metric(
 
     paired_values: list[tuple[int, float, float]] = []
     for seed in overlap:
+        fp_a = rows_a[seed].get("dataset_fingerprint")
+        fp_b = rows_b[seed].get("dataset_fingerprint")
+        eval_hash_a = rows_a[seed].get("eval_sample_ids_hash")
+        eval_hash_b = rows_b[seed].get("eval_sample_ids_hash")
+        if fp_a != fp_b or eval_hash_a != eval_hash_b:
+            raise ValueError(
+                "Paired runs are not comparable: dataset identity mismatch for "
+                f"{architecture_type}: {baseline_a} vs {baseline_b}, seed={seed}. "
+                f"dataset_fingerprint ({fp_a} vs {fp_b}), eval_sample_ids_hash ({eval_hash_a} vs {eval_hash_b})."
+            )
         va = _coerce_float(rows_a[seed].get(metric_name))
         vb = _coerce_float(rows_b[seed].get(metric_name))
         if va is None or vb is None:
-            continue
+            raise ValueError(
+                "Confirmatory comparison has partial metric missingness for paired seed "
+                f"{seed} on metric '{metric_name}' ({architecture_type}: {baseline_a} vs {baseline_b}). "
+                "Do not drop incomplete rows from confirmatory inference."
+            )
         paired_values.append((seed, va, vb))
 
     if not paired_values:
@@ -353,6 +409,9 @@ def run_analysis(
     dataset_scope: str = "primary",
     compute_controlled_only: bool = False,
     ablation_only: bool = False,
+    allow_ablations_in_analysis: bool = False,
+    allow_pilot_runs_in_analysis: bool = False,
+    allow_external_in_confirmatory: bool = False,
 ) -> dict[str, object]:
     source_runs = _load_runs(input_path)
     runs = [dict(r) for r in source_runs]
@@ -368,6 +427,7 @@ def run_analysis(
                 flattened = dict(row)
                 flattened["dataset_name"] = external_dataset_name
                 flattened["dataset_scope"] = "external"
+                flattened["dataset_type"] = "external"
                 flattened["analysis_tier_default"] = "descriptive"
                 flattened["final_eval_loss"] = payload.get("eval_loss")
                 for metric_name in (
@@ -388,6 +448,8 @@ def run_analysis(
         runs = [r for r in runs if bool(r.get("compute_control_enabled"))]
     if ablation_only:
         runs = [r for r in runs if (r.get("ablation_recurrent_steps") not in (None, "") or r.get("ablation_lora_rank") not in (None, ""))]
+    for row in runs:
+        row.setdefault("dataset_type", "primary")
     _validate_runs(runs)
     grouped = _group_runs(runs)
     primary_rows = [r for r in runs if r.get("dataset_scope") != "external"]
@@ -399,6 +461,12 @@ def run_analysis(
     confirmatory_rows: list[dict[str, object]] = []
     confirmatory_enabled = dataset_scope in {"primary", "all"}
     if confirmatory_enabled:
+        _require_confirmatory_purity(
+            primary_rows,
+            allow_ablations_in_analysis=allow_ablations_in_analysis,
+            allow_pilot_runs_in_analysis=allow_pilot_runs_in_analysis,
+            allow_external_in_confirmatory=allow_external_in_confirmatory,
+        )
         for contrast in contrasts:
             for metric in PRIMARY_CONFIRMATORY_OUTCOMES:
                 confirmatory_rows.append(
@@ -516,6 +584,9 @@ def run_analysis(
             "ci_method": "bootstrap percentile CI for paired mean difference (5000 resamples, RNG seed=0)",
         },
         "allow_unpaired": allow_unpaired,
+        "allow_ablations_in_analysis": allow_ablations_in_analysis,
+        "allow_pilot_runs_in_analysis": allow_pilot_runs_in_analysis,
+        "allow_external_in_confirmatory": allow_external_in_confirmatory,
         "dataset_scope": dataset_scope,
         "confirmatory_enabled": confirmatory_enabled,
         "any_rows_downgraded_to_descriptive": any(bool(r.get("downgraded_to_descriptive")) for r in confirmatory_rows),
@@ -550,6 +621,9 @@ def main() -> None:
         dataset_scope=args.dataset_scope,
         compute_controlled_only=args.compute_controlled_only,
         ablation_only=args.ablation_only,
+        allow_ablations_in_analysis=args.allow_ablations_in_analysis,
+        allow_pilot_runs_in_analysis=args.allow_pilot_runs_in_analysis,
+        allow_external_in_confirmatory=args.allow_external_in_confirmatory,
     )
     print(json.dumps(result, indent=2))
 

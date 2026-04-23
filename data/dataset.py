@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import hashlib
+import json
 import random
 import re
 
@@ -387,7 +389,45 @@ def collate_token_sequences(batch: list[Example], *, pad_token_id: int) -> dict[
 class DatasetBundle:
     train: SequenceDataset
     eval: SequenceDataset
-    preprocessing_summary: dict[str, int]
+    preprocessing_summary: dict[str, Any]
+
+
+def _stable_hash(payload: object) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _sample_ids_hash(examples: list[Example]) -> str:
+    sample_ids = [str(ex.get("source_signature", "")) for ex in examples]
+    return _stable_hash(sample_ids)
+
+
+def _dataset_identity_payload(
+    *,
+    dataset_name: str,
+    upstream_split: str,
+    dataset_seed: int,
+    preprocessing_settings: dict[str, Any],
+    selected_sample_ids: list[str],
+    train_examples: list[Example],
+    eval_examples: list[Example],
+) -> dict[str, Any]:
+    train_hash = _sample_ids_hash(train_examples)
+    eval_hash = _sample_ids_hash(eval_examples)
+    payload = {
+        "dataset_name": dataset_name,
+        "upstream_split": upstream_split,
+        "dataset_seed": int(dataset_seed),
+        "preprocessing_settings": preprocessing_settings,
+        "selected_sample_ids_hash": _stable_hash(selected_sample_ids),
+        "selected_sample_count": len(selected_sample_ids),
+        "train_sample_ids_hash": train_hash,
+        "eval_sample_ids_hash": eval_hash,
+        "train_sample_count": len(train_examples),
+        "eval_sample_count": len(eval_examples),
+    }
+    payload["dataset_fingerprint"] = _stable_hash(payload)
+    return payload
 
 
 def _split_counts(total_examples: int, eval_fraction: float) -> tuple[int, int]:
@@ -421,6 +461,22 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
             "samples_truncated_to_max_seq_length": 0,
             "samples_with_answer_span_truncated": 0,
         }
+        identity = _dataset_identity_payload(
+            dataset_name=name,
+            upstream_split=str(settings.get("split", "synthetic")),
+            dataset_seed=seed,
+            preprocessing_settings={k: settings.get(k) for k in sorted(settings)},
+            selected_sample_ids=[str(ex.get("source_signature", "")) for ex in (train + evalv)],
+            train_examples=train,
+            eval_examples=evalv,
+        )
+        summary.update(identity)
+        summary.update({
+            "dataset_split": str(settings.get("split", "synthetic")),
+            "dataset_seed": seed,
+            "dataset_subset_size": total_examples,
+            "dataset_eval_fraction": eval_fraction,
+        })
         return DatasetBundle(train=SequenceDataset(train), eval=SequenceDataset(evalv), preprocessing_summary=summary)
 
     if name != "metamath_qa":
@@ -461,6 +517,22 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
         "eval_examples_written": len(eval_examples),
         "eval_candidates_dropped_signature_overlap": dropped_signature_overlap,
     }
+    identity = _dataset_identity_payload(
+        dataset_name=name,
+        upstream_split=str(settings.get("split", "train")),
+        dataset_seed=seed,
+        preprocessing_settings={k: settings.get(k) for k in sorted(settings)},
+        selected_sample_ids=[str(ex.get("source_signature", "")) for ex in examples],
+        train_examples=train_examples,
+        eval_examples=eval_examples,
+    )
+    preprocessing_summary.update(identity)
+    preprocessing_summary.update({
+        "dataset_split": str(settings.get("split", "train")),
+        "dataset_seed": seed,
+        "dataset_subset_size": total_examples,
+        "dataset_eval_fraction": eval_fraction,
+    })
 
     return DatasetBundle(
         train=SequenceDataset(train_examples),
@@ -472,13 +544,33 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
 def build_external_eval_dataset(name: str, settings: dict[str, Any], tokenizer: Any | None) -> DatasetBundle:
     if tokenizer is None:
         raise ValueError("Tokenizer is required for external evaluation datasets.")
+    split = str(settings.get("split", "test"))
+    seed = int(settings.get("seed", 0))
+    subset_size = int(settings.get("subset_size", 0))
     examples, summary = build_external_examples_from_hf(
         dataset_name=name,
-        split=str(settings.get("split", "test")),
-        subset_size=int(settings.get("subset_size", 0)),
-        seed=int(settings.get("seed", 0)),
+        split=split,
+        subset_size=subset_size,
+        seed=seed,
         max_seq_length=int(settings.get("max_seq_length", 2048)),
         tokenizer=tokenizer,
         cache_dir=settings.get("cache_dir"),
     )
+    identity = _dataset_identity_payload(
+        dataset_name=name,
+        upstream_split=split,
+        dataset_seed=seed,
+        preprocessing_settings={k: settings.get(k) for k in sorted(settings)},
+        selected_sample_ids=[str(ex.get("source_signature", "")) for ex in examples],
+        train_examples=examples,
+        eval_examples=examples,
+    )
+    summary.update(identity)
+    summary.update({
+        "dataset_split": split,
+        "dataset_seed": seed,
+        "dataset_subset_size": subset_size,
+        "dataset_eval_fraction": 0.0,
+        "dataset_type": "external",
+    })
     return DatasetBundle(train=SequenceDataset(examples), eval=SequenceDataset(examples), preprocessing_summary=summary)

@@ -36,7 +36,7 @@ Optional external evaluation datasets can be configured with:
 ```
 
 External evaluation is opt-in only. When enabled, each dataset is evaluated after primary eval and written under `external_eval.<dataset>.*` in `metrics.json`.
-External eval rows are descriptive-only by default, are labeled `report_tier=external_eval`, and are excluded from aggregate confirmatory metrics.
+External eval rows are descriptive-only by default, are labeled `report_tier=external_eval`, and are excluded from primary aggregates and confirmatory inference unless an explicit analysis override is set.
 
 Each sample is converted into a staged sequence:
 
@@ -61,6 +61,19 @@ Per-run preprocessing statistics are written to `dataset_preprocessing_summary.j
 - samples with valid answer-only spans,
 - samples with numeric answers,
 - samples excluded or degraded (filtered + empty answer-span after tokenization).
+- deterministic dataset identity artifacts:
+  - `dataset_fingerprint`
+  - `train_sample_ids_hash`
+  - `eval_sample_ids_hash`
+  - `dataset_split`, `dataset_seed`, `dataset_subset_size`, `dataset_eval_fraction`
+
+Dataset fingerprint protocol (stable SHA-256 over canonical JSON) includes:
+- dataset name
+- upstream split
+- dataset seed
+- preprocessing settings
+- selected sample identities hash
+- train/eval sample-ID hashes and counts
 
 ## Train/eval protocol
 
@@ -89,7 +102,7 @@ Limitations:
 ## Canonical run-level metrics schema (`metrics.json`)
 
 Official fields:
-`run_name`, `config_name`, `baseline_name`, `baseline_family`, `run_scope`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `symbolic_answer_accuracy`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_multi_value_exact_set_match_count`, `answer_eval_multi_value_partial_match_count`, `answer_eval_multi_value_unmatched_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `symbolic_eval_attempt_count`, `symbolic_eval_success_count`, `symbolic_eval_failure_count`, `answer_eval_symbolic_match_count`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `compute_control_enabled`, `compute_control_mode`, `adjusted_max_steps`, `ablation_recurrent_steps`, `ablation_lora_rank`, `external_eval`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
+`run_name`, `config_name`, `baseline_name`, `baseline_family`, `run_scope`, `dataset_name`, `dataset_type`, `dataset_split`, `dataset_seed`, `dataset_subset_size`, `dataset_eval_fraction`, `dataset_fingerprint`, `train_sample_ids_hash`, `eval_sample_ids_hash`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `symbolic_answer_accuracy`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_multi_value_exact_set_match_count`, `answer_eval_multi_value_partial_match_count`, `answer_eval_multi_value_unmatched_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `symbolic_eval_attempt_count`, `symbolic_eval_success_count`, `symbolic_eval_failure_count`, `answer_eval_symbolic_match_count`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `compute_control_enabled`, `compute_control_mode`, `adjusted_max_steps`, `effective_optimizer_steps`, `tokens_per_optimizer_step`, `ablation_recurrent_steps`, `ablation_lora_rank`, `external_eval`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
 
 Each run also writes `answer_eval_diagnostics.json` with answer-scoring counts and skip reasons.
 
@@ -120,7 +133,8 @@ Supported modes:
 - `tokens`: enforces `training.compute_control.max_tokens`.
 - `wall_time`: enforces `training.compute_control.max_wall_time_seconds`.
 
-Run outputs now include: `compute_control_enabled`, `compute_control_mode`, `effective_forward_passes_per_example`, `adjusted_max_steps`.
+Run outputs now include: `compute_control_enabled`, `compute_control_mode`, `effective_forward_passes_per_example`, `adjusted_max_steps`, `effective_optimizer_steps`, `tokens_per_optimizer_step`.
+Important interpretation: `effective_forward_passes_per_example` equalizes forward-pass budget only; it does **not** equalize optimizer dynamics. Token and wall-time modes alter stopping criteria differently and should not be interpreted as identical optimization trajectories.
 
 ### Ablation design (opt-in)
 
@@ -166,6 +180,14 @@ Aggregates are grouped by:
 - `model_name`
 - `dataset_name`
 - `config_name`
+- `compute_control_enabled`
+- `compute_control_mode`
+- `recurrence_steps`
+- `ablation_recurrent_steps`
+- `ablation_lora_rank`
+- `run_scope`
+
+Aggregation is fail-fast: if any required control field is heterogeneous inside a candidate group, aggregation errors instead of averaging incompatible runs.
 
 For each group, mean/std are reported for:
 - `final_eval_loss`
@@ -211,7 +233,8 @@ For each group, mean/std are reported for:
 - **Pairing fallback:** with `--allow-unpaired`, non-overlap yields descriptive downgraded rows (`raw_p_value=null`) excluded from Holm.
 - **Interval reporting:** bootstrap percentile 95% CI for paired mean difference (`mean_difference_ci_low/high`, 5000 resamples, fixed RNG seed=0).
 - **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.
-- **External evaluation analysis mode:** external datasets remain descriptive by default and are analyzable only when explicitly selected via `--dataset-scope external` (or included in `--dataset-scope all`); confirmatory inference remains primary-dataset-only.
+- **Confirmatory purity defaults:** confirmatory analysis fails on ablation-derived rows and pilot rows unless explicitly overridden (`--allow-ablations-in-analysis`, `--allow-pilot-runs-in-analysis`).
+- **External evaluation analysis mode:** external datasets remain descriptive by default and are analyzable only when explicitly selected via `--dataset-scope external` (or included in `--dataset-scope all`); confirmatory inference remains primary-dataset-only by default.
 
 
 ## Threats to validity and known limitations
