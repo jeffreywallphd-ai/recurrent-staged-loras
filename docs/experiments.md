@@ -61,19 +61,21 @@ Per-run preprocessing statistics are written to `dataset_preprocessing_summary.j
 - `stage_2_token_accuracy`: token accuracy on `stage2_mask` (reasoning section).
 - `stage_3_token_accuracy`: token accuracy on `stage3_mask` (full Stage 3 section, including `Final Answer:` header tokens).
 - `final_answer_accuracy`: compatibility metric; normalized string match on decoded `answer_mask` span only.
-- `final_answer_exact_match`: strict equality on decoded raw answer strings (only outer whitespace trimmed).
-- `final_answer_normalized_match`: reviewer-facing normalized string metric using layered normalization (case fold, math-format cleanup including `$...$` and `\\boxed{...}`, punctuation/spacing cleanup, semantic numeric canonicalization such as `2`, `2.0`, `2.`, and simple fraction/decimal equivalence where feasible).
-- `normalized_numeric_answer_accuracy`: robust numeric answer metric on `answer_mask` spans. All numeric values are extracted (integers, decimals, scientific notation, signed values, simple fractions). A sample is correct when at least one predicted numeric value matches at least one target numeric value within tolerance (`abs_tol=1e-6`, `rel_tol=1e-6`). Multi-value target handling currently uses rule=`any` (at least one match); this rule is explicitly logged.
+- `final_answer_exact_match`: strict raw-string equality on decoded answer text (outer whitespace trimmed only).
+- `final_answer_normalized_match`: reviewer-facing normalized string metric using layered normalization (case fold, math-format cleanup including `$...$` and `\boxed{...}`, punctuation/spacing cleanup, semantic numeric canonicalization).
+- `symbolic_answer_accuracy`: symbolic-equivalence metric for expression-like answers only. The evaluator attempts SymPy parsing/equivalence (`simplify`/`equals`) when either side looks math-expression-like.
+- `normalized_numeric_answer_accuracy`: numeric answer metric on `answer_mask` spans. Numeric values are extracted (integers, decimals, scientific notation, signed values, simple fractions). Multi-value evaluation defaults to `strict_set` (set equality under tolerance-aware matching, order-invariant). Alternate rules (`subset`, `any`) are diagnostic-only and must be explicitly selected.
 - Reviewer-facing aliases are also written: `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, and `answer_span_numeric_accuracy`.
 
 Limitations:
-- Normalization is still text-based and does not prove full symbolic equivalence for algebraic expressions.
-- Multi-value numeric validation defaults to `any`-match (not full set equivalence); explicit counts are emitted for transparency.
+- Symbolic evaluation is conditional: non-expression answers are not attempted, and parse failures are counted explicitly.
+- SymPy equivalence is conservative and may not cover all mathematical notations emitted by language models.
+- Multi-value numeric scoring is tolerance-based set matching and still does not prove symbolic equivalence of non-numeric structured outputs.
 
 ## Canonical run-level metrics schema (`metrics.json`)
 
 Official fields:
-`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
+`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `symbolic_answer_accuracy`, `normalized_numeric_answer_accuracy`, `answer_span_normalized_accuracy`, `answer_span_exact_match`, `answer_span_normalized_match`, `answer_span_numeric_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_no_answer_span`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `answer_eval_normalized_match_count`, `answer_eval_exact_match_count`, `answer_eval_numeric_match_count`, `answer_eval_multi_value_target_count`, `answer_eval_numeric_pred_value_count`, `answer_eval_numeric_target_value_count`, `answer_eval_numeric_value_match_count`, `answer_eval_multi_value_exact_set_match_count`, `answer_eval_multi_value_partial_match_count`, `answer_eval_multi_value_unmatched_count`, `answer_eval_string_match_numeric_miss_count`, `answer_eval_normalized_only_count`, `answer_eval_skipped_ambiguous_numeric`, `symbolic_eval_attempt_count`, `symbolic_eval_success_count`, `symbolic_eval_failure_count`, `answer_eval_symbolic_match_count`, `answer_eval_numeric_abs_tolerance`, `answer_eval_numeric_multi_value_rule`, `answer_eval_answer_length_histogram`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
 
 Each run also writes `answer_eval_diagnostics.json` with answer-scoring counts and skip reasons.
 
@@ -109,6 +111,7 @@ For each group, mean/std are reported for:
 - `stage_3_token_accuracy`
 - `final_answer_accuracy`
 - `final_answer_exact_match`
+- `symbolic_answer_accuracy`
 - `normalized_numeric_answer_accuracy`
 - `wall_time_seconds_total`
 - `tokens_per_second_train`
@@ -144,3 +147,13 @@ For each group, mean/std are reported for:
 - **Pairing fallback:** with `--allow-unpaired`, non-overlap yields descriptive downgraded rows (`raw_p_value=null`) excluded from Holm.
 - **Interval reporting:** bootstrap percentile 95% CI for paired mean difference (`mean_difference_ci_low/high`, 5000 resamples, fixed RNG seed=0).
 - **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.
+
+
+## Threats to validity and known limitations
+
+- **Dataset partitioning:** current MetaMathQA protocol samples from a single upstream split (`train`) and then forms train/eval partitions locally. We now log partition strategy and signature-based overlap removals, but this is still weaker than independent upstream train/test splits.
+- **Near-duplicate leakage risk:** exact problem+answer signature overlap across train/eval is filtered and counted, but semantic near-duplicates can still remain.
+- **Stage extraction heuristics:** answer extraction (`####`, `\boxed{}`, `the answer is`) can miss uncommon formats; failures are reflected in preprocessing summaries and answer-eval skip counters.
+- **Truncation effects:** long examples can be truncated at tokenizer max length; truncation and answer-span truncation counts are now written in preprocessing summaries and should be reviewed before inferential reporting.
+- **Answer scoring scope:** symbolic parsing is attempted only when answers look expression-like and may fail for malformed or unsupported notation; numeric scoring is tolerance-based and not a full theorem prover.
+- **Comparison scope:** confirmatory claims are scoped to the fixed dense-vs-MoE baseline matrix on MetaMathQA-centered staged supervision; external validity beyond this setup is not claimed.
