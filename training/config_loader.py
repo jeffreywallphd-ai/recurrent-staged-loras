@@ -228,5 +228,10 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
             hidden_size=hidden_size,
             adapter_bank=adapter_bank,
         )
+        # HF backbones frequently emit bf16/fp16 hidden states while newly
+        # constructed recurrent modules default to fp32; align once at build time
+        # so recurrent matmuls do not hit dtype/device mismatch errors.
+        runtime_dtype, runtime_device = base_model.runtime_dtype_device()
+        refiner = refiner.to(device=runtime_device, dtype=runtime_dtype)
 
     return StagedLatentAdaptationModel(config=variant, base_model=base_model, refiner=refiner)
