@@ -30,6 +30,7 @@ SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tok
 SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
 SUPPORTED_EXTERNAL_EVAL_DATASETS = {"gsm8k", "math", "svamp"}
 TOKENIZER_REQUIRED_DATASETS = {"metamath_qa", "gsm8k", "math", "svamp"}
+EXTERNAL_EVAL_DEFAULTS: dict[str, Any] = {"split": "test", "subset_size": 0, "seed": 0}
 
 
 def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -132,6 +133,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         raise ValueError(f"Unsupported dataset '{dataset_name}'. Supported primary datasets: {sorted(SUPPORTED_PRIMARY_DATASETS)}")
     dataset_resolved["name"] = dataset_name
 
+    normalized_external_evals: list[dict[str, Any]] = []
     for item in dataset_resolved.get("external_evaluations", []):
         if not isinstance(item, dict):
             raise ValueError("dataset.external_evaluations entries must be objects")
@@ -143,6 +145,20 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
                 f"Unsupported external evaluation dataset '{external_name}'. "
                 f"Supported external datasets: {sorted(SUPPORTED_EXTERNAL_EVAL_DATASETS)}"
             )
+        split = str(item.get("split", EXTERNAL_EVAL_DEFAULTS["split"])).strip()
+        if not split:
+            raise ValueError("dataset.external_evaluations entry requires non-empty 'split' when provided")
+        subset_size = int(item.get("subset_size", EXTERNAL_EVAL_DEFAULTS["subset_size"]))
+        if subset_size < 0:
+            raise ValueError("dataset.external_evaluations subset_size must be >= 0")
+        seed = int(item.get("seed", EXTERNAL_EVAL_DEFAULTS["seed"]))
+        normalized_external_evals.append({
+            "name": external_name,
+            "split": split,
+            "subset_size": subset_size,
+            "seed": seed,
+        })
+    dataset_resolved["external_evaluations"] = normalized_external_evals
 
     variant = parse_variant_config(raw)
     ablation = raw.get("ablation", {})

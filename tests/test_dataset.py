@@ -151,3 +151,27 @@ def test_external_dataset_loader_builds_answer_mask(monkeypatch) -> None:
     ex = bundle.eval[0]
     assert int(ex["answer_mask"].sum().item()) > 0
     assert ex["answer_text"] in {"4", "6"}
+
+
+def test_external_dataset_subset_size_split_and_seed_are_respected(monkeypatch) -> None:
+    class _FakeTokenizer:
+        def __call__(self, text, truncation, max_length, return_offsets_mapping, add_special_tokens):
+            del truncation, max_length, return_offsets_mapping, add_special_tokens
+            return {"input_ids": [1] * len(text), "offset_mapping": [(i, i + 1) for i in range(len(text))]}
+
+    observed: dict[str, object] = {}
+    fake_rows = [{"question": f"{i}+{i}=?", "answer": f"#### {2*i}"} for i in range(10)]
+
+    def _fake_loader(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return fake_rows
+
+    monkeypatch.setattr("datasets.load_dataset", _fake_loader)
+    bundle = build_external_eval_dataset("gsm8k", {"split": "test", "subset_size": 3, "seed": 9, "max_seq_length": 64}, _FakeTokenizer())
+    assert observed["args"] == ("gsm8k", "main")
+    assert observed["kwargs"] == {"split": "test", "cache_dir": None}
+    assert len(bundle.eval) == 3
+    assert bundle.preprocessing_summary["dataset_split"] == "test"
+    assert bundle.preprocessing_summary["dataset_seed"] == 9
+    assert bundle.preprocessing_summary["dataset_subset_size"] == 3

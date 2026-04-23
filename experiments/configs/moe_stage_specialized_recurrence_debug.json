@@ -1,0 +1,77 @@
+{
+  "baseline": "stage_specialized_recurrence",
+  "model": {
+    "name": "allenai/OLMoE-1B-7B-0125-Instruct",
+    "tokenizer_name": "allenai/OLMoE-1B-7B-0125-Instruct",
+    "trust_remote_code": true,
+    "dtype": "bfloat16",
+    "device_map": "auto",
+    "max_seq_length": 4096,
+    "load_in_4bit": false,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": true,
+    "architecture_type": "moe",
+    "frozen_base": true,
+    "standard_lora": {
+      "enabled": false,
+      "rank": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "up_proj",
+        "down_proj",
+        "gate_proj"
+      ]
+    },
+    "latent_refiner": {
+      "enabled": true,
+      "num_recurrent_steps": 3,
+      "recurrence_mode": "stage_specialized",
+      "adapter_sharing": "per_step",
+      "adapter": {
+        "enabled": true,
+        "rank": 8,
+        "alpha": 16,
+        "dropout": 0.0,
+        "target_modules": [
+          "refiner_proj"
+        ]
+      }
+    }
+  },
+  "dataset": {
+    "name": "metamath_qa",
+    "settings": {
+      "subset_size": 32,
+      "eval_fraction": 0.25,
+      "seed": 7,
+      "cache_dir": "./.cache/hf_datasets",
+      "split": "train"
+    }
+  },
+  "training": {
+    "batch_size": 1,
+    "num_epochs": 1,
+    "max_steps": 8,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0,
+    "seed": 7,
+    "eval_interval_steps": 4,
+    "checkpoint_interval_steps": 8,
+    "eval_enabled": true,
+    "deterministic": false
+  },
+  "output": {
+    "dir": "outputs/stage_specialized_recurrence"
+  },
+  "run_notes": [
+    "NON-REPORTABLE",
+    "debug/smoke-only preset",
+    "intended for fast bug hunting"
+  ]
+}

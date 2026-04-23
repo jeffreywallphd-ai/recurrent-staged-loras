@@ -67,6 +67,29 @@ def _filter_config_paths(paths: list[Path], preset_scope: str) -> list[Path]:
     return [p for p in paths if not _is_pilot(p)]
 
 
+def _matches_config_family(path: Path, family: str) -> bool:
+    stem = path.stem
+    if family == "all":
+        return True
+    if family == "confirmatory":
+        return all(token not in stem for token in ("_pilot", "_debug", "_external_eval", "_compute_controlled", "_ablation"))
+    if family == "pilot":
+        return stem.endswith("_pilot")
+    if family == "debug":
+        return "_debug" in stem
+    if family == "external_eval":
+        return "_external_eval" in stem
+    if family == "compute_controlled":
+        return "_compute_controlled" in stem
+    if family == "ablation":
+        return "_ablation" in stem
+    raise ValueError(f"Unknown config family filter '{family}'")
+
+
+def _filter_by_config_family(paths: list[Path], family: str) -> list[Path]:
+    return [p for p in paths if _matches_config_family(p, family)]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run all experiment configs sequentially")
     parser.add_argument("--configs", nargs="*", default=[])
@@ -74,6 +97,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", nargs="*", type=int, default=[11, 22, 33])
     parser.add_argument("--preset-scope", choices=["study", "pilot", "all"], default="study")
     parser.add_argument("--run-scope", choices=["confirmatory", "ablation", "all"], default="confirmatory")
+    parser.add_argument(
+        "--config-family",
+        choices=["all", "confirmatory", "pilot", "debug", "external_eval", "compute_controlled", "ablation"],
+        default="all",
+        help="Optional suffix-based config selector for experiments/configs naming families.",
+    )
     return parser.parse_args()
 
 
@@ -331,8 +360,12 @@ def main() -> None:
     args = parse_args()
     raw_config_paths = _collect_config_paths(args.configs, args.config_dir)
     config_paths = _filter_config_paths(raw_config_paths, args.preset_scope)
+    config_paths = _filter_by_config_family(config_paths, args.config_family)
     if not config_paths:
-        raise ValueError(f"No configs selected after applying preset scope '{args.preset_scope}'.")
+        raise ValueError(
+            f"No configs selected after applying preset scope '{args.preset_scope}' "
+            f"and config family '{args.config_family}'."
+        )
 
     runs: list[dict[str, object]] = []
     for config_path in config_paths:
