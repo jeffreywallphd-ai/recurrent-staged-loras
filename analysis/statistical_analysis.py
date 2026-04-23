@@ -29,6 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", default="outputs/summary.json", help="Path to outputs/summary.json or outputs/summary.csv")
     parser.add_argument("--output-dir", default="outputs", help="Output directory for statistical artifacts")
     parser.add_argument("--allow-unpaired", action="store_true", help="Allow unpaired fallback when seed pairing fails")
+    parser.add_argument("--dataset-scope", choices=["primary", "external", "all"], default="primary")
+    parser.add_argument("--compute-controlled-only", action="store_true")
+    parser.add_argument("--ablation-only", action="store_true")
     return parser.parse_args()
 
 
@@ -332,8 +335,22 @@ def _compare_metric(
     }
 
 
-def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) -> dict[str, object]:
+def run_analysis(
+    *,
+    input_path: Path,
+    output_dir: Path,
+    allow_unpaired: bool,
+    dataset_scope: str = "primary",
+    compute_controlled_only: bool = False,
+    ablation_only: bool = False,
+) -> dict[str, object]:
     runs = _load_runs(input_path)
+    if dataset_scope == "primary":
+        runs = [r for r in runs if r.get("dataset_name") not in (None, "")]
+    if compute_controlled_only:
+        runs = [r for r in runs if bool(r.get("compute_control_enabled"))]
+    if ablation_only:
+        runs = [r for r in runs if r.get("ablation_recurrent_steps") not in (None, "")]
     _validate_runs(runs)
     grouped = _group_runs(runs)
 
@@ -471,7 +488,14 @@ def run_analysis(*, input_path: Path, output_dir: Path, allow_unpaired: bool) ->
 
 def main() -> None:
     args = parse_args()
-    result = run_analysis(input_path=Path(args.input), output_dir=Path(args.output_dir), allow_unpaired=args.allow_unpaired)
+    result = run_analysis(
+        input_path=Path(args.input),
+        output_dir=Path(args.output_dir),
+        allow_unpaired=args.allow_unpaired,
+        dataset_scope=args.dataset_scope,
+        compute_controlled_only=args.compute_controlled_only,
+        ablation_only=args.ablation_only,
+    )
     print(json.dumps(result, indent=2))
 
 

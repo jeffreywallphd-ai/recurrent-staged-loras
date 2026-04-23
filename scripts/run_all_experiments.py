@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from itertools import product
 from pathlib import Path
 from statistics import mean, stdev
+from typing import Any
 
-from training.config_loader import load_runtime_config
+from training.config_loader import load_experiment_config, load_runtime_config, load_runtime_config_from_raw
 from training.engine import build_training_components, run_training_loop
 from training.metrics_schema import AGG_GROUP_BY_FIELDS, AGGREGATE_METRICS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 
@@ -75,6 +77,32 @@ def _group_key(row: dict[str, object]) -> tuple[str, ...]:
     return tuple(str(row.get(key, "")) for key in AGG_GROUP_BY_FIELDS)
 
 
+def _build_ablation_runs(config_path: Path) -> list[tuple[str, dict[str, Any]]]:
+    raw = load_experiment_config(config_path)
+    ablations = dict(raw.get("ablations", {}))
+    recurrent_steps = list(ablations.get("recurrent_steps", []))
+    lora_ranks = list(ablations.get("lora_rank", []))
+    if not recurrent_steps and not lora_ranks:
+        return [(config_path.name, raw)]
+
+    if _is_pilot(config_path):
+        raise ValueError("Ablations must not be attached to pilot configs to avoid silent mixing with confirmatory presets")
+
+    rec_values = recurrent_steps or [int(raw.get("model", {}).get("latent_refiner", {}).get("num_recurrent_steps", 1))]
+    rank_values = lora_ranks or [int(raw.get("model", {}).get("latent_refiner", {}).get("adapter", {}).get("rank", 8))]
+    expanded: list[tuple[str, dict[str, Any]]] = []
+    for rec, rank in product(rec_values, rank_values):
+        derived = json.loads(json.dumps(raw))
+        derived.setdefault("model", {}).setdefault("latent_refiner", {})["num_recurrent_steps"] = int(rec)
+        derived.setdefault("model", {}).setdefault("latent_refiner", {}).setdefault("adapter", {})["rank"] = int(rank)
+        derived_baseline = f"{raw['baseline']}_r{int(rec)}_rank{int(rank)}"
+        derived["baseline"] = derived_baseline
+        derived["ablation"] = {"recurrent_steps": int(rec), "lora_rank": int(rank)}
+        derived_name = f"{config_path.stem}__r{int(rec)}_rank{int(rank)}.json"
+        expanded.append((derived_name, derived))
+    return expanded
+
+
 def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggregates: list[dict[str, object]]) -> None:
     report_rows: list[dict[str, object]] = []
     for run in runs:
@@ -84,11 +112,16 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "run_name": run.get("run_name"),
             "config_name": run.get("config_name"),
             "baseline_name": run.get("baseline_name"),
-            "baseline_family": run.get("baseline_name"),
+            "baseline_family": str(run.get("baseline_name", "")).split("_r", 1)[0],
             "dataset_name": run.get("dataset_name"),
+            "dataset": "primary",
             "seed": run.get("seed"),
             "architecture_type": run.get("architecture_type"),
             "model_name": run.get("model_name"),
+            "compute_control_enabled": run.get("compute_control_enabled"),
+            "compute_control_mode": run.get("compute_control_mode"),
+            "ablation_recurrent_steps": run.get("ablation_recurrent_steps"),
+            "ablation_lora_rank": run.get("ablation_lora_rank"),
             "final_eval_loss": run.get("final_eval_loss"),
             "eval_perplexity": run.get("eval_perplexity"),
             "stage_2_token_accuracy": run.get("stage_2_token_accuracy"),
@@ -100,6 +133,33 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "wall_time_seconds_total": run.get("wall_time_seconds_total"),
             "tokens_per_second_train": run.get("tokens_per_second_train"),
         })
+        for external_name, payload in dict(run.get("external_eval", {})).items():
+            if not isinstance(payload, dict):
+                continue
+            report_rows.append({
+                "row_type": "run",
+                "report_tier": "external_eval",
+                "run_name": run.get("run_name"),
+                "config_name": run.get("config_name"),
+                "baseline_name": run.get("baseline_name"),
+                "baseline_family": str(run.get("baseline_name", "")).split("_r", 1)[0],
+                "dataset_name": run.get("dataset_name"),
+                "dataset": external_name,
+                "seed": run.get("seed"),
+                "architecture_type": run.get("architecture_type"),
+                "model_name": run.get("model_name"),
+                "compute_control_enabled": run.get("compute_control_enabled"),
+                "compute_control_mode": run.get("compute_control_mode"),
+                "ablation_recurrent_steps": run.get("ablation_recurrent_steps"),
+                "ablation_lora_rank": run.get("ablation_lora_rank"),
+                "final_eval_loss": payload.get("eval_loss"),
+                "stage_2_token_accuracy": payload.get("stage_2_token_accuracy"),
+                "stage_3_token_accuracy": payload.get("stage_3_token_accuracy"),
+                "final_answer_accuracy": payload.get("final_answer_accuracy"),
+                "final_answer_exact_match": payload.get("final_answer_exact_match"),
+                "normalized_numeric_answer_accuracy": payload.get("normalized_numeric_answer_accuracy"),
+            })
+
     for agg in aggregates:
         metrics = dict(agg.get("metrics", {}))
         report_rows.append({
@@ -109,6 +169,7 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "baseline_name": agg.get("baseline_name"),
             "baseline_family": agg.get("baseline_name"),
             "dataset_name": agg.get("dataset_name"),
+            "dataset": "primary",
             "architecture_type": agg.get("architecture_type"),
             "model_name": agg.get("model_name"),
             "num_runs": agg.get("num_runs"),
@@ -149,20 +210,22 @@ def main() -> None:
 
     runs: list[dict[str, object]] = []
     for config_path in config_paths:
-        for seed in args.seeds:
-            runtime = load_runtime_config(config_path)
-            runtime.training.seed = seed
-            runtime.dataset["settings"]["seed"] = seed
-            runtime.output["dir"] = str(Path("outputs") / runtime.baseline)
-            run_name = f"{config_path.stem}_seed{seed}"
-            result = run_training_loop(
-                components=build_training_components(runtime),
-                run_name=run_name,
-                config_name=config_path.name,
-            )
-            metrics = json.loads((result.output_dir / "metrics.json").read_text(encoding="utf-8"))
-            runs.append(metrics)
-            print(f"[ok] {run_name}")
+        variants = _build_ablation_runs(config_path)
+        for derived_name, raw_cfg in variants:
+            for seed in args.seeds:
+                runtime = load_runtime_config_from_raw(raw_cfg)
+                runtime.training.seed = seed
+                runtime.dataset["settings"]["seed"] = seed
+                runtime.output["dir"] = str(Path("outputs") / runtime.baseline)
+                run_name = f"{Path(derived_name).stem}_seed{seed}"
+                result = run_training_loop(
+                    components=build_training_components(runtime),
+                    run_name=run_name,
+                    config_name=derived_name,
+                )
+                metrics = json.loads((result.output_dir / "metrics.json").read_text(encoding="utf-8"))
+                runs.append(metrics)
+                print(f"[ok] {run_name}")
 
     grouped: dict[tuple[str, ...], list[dict[str, object]]] = {}
     for row in runs:

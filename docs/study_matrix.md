@@ -45,6 +45,30 @@ Primary multi-seed report runs use: `11`, `22`, `33`.
 - `effective_forward_passes_per_example`
 - `wall_time_seconds_total`
 - `tokens_per_second_train`
+- `compute_control_enabled`
+- `compute_control_mode`
+- `adjusted_max_steps`
+
+## External evaluations (optional, non-confirmatory by default)
+
+Supported config-driven external datasets:
+- `gsm8k`
+- `math`
+- `svamp`
+
+External scores are reported separately under `external_eval.<dataset>` and in `report_table.csv` rows with `report_tier=external_eval`.
+
+## Ablations (optional, separated from confirmatory matrix)
+
+Supported ablation grid controls:
+- `ablations.recurrent_steps`
+- `ablations.lora_rank`
+
+Expanded run names use suffix `_r{steps}_rank{rank}` and write explicit fields:
+- `ablation_recurrent_steps`
+- `ablation_lora_rank`
+
+Do not mix ablation-derived runs with confirmatory study reporting by default.
 
 ## Reportability protocol
 

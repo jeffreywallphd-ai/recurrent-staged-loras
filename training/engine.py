@@ -12,11 +12,11 @@ import torch
 from torch.utils.data import DataLoader
 from functools import partial
 
-from data.dataset import build_train_eval_datasets, collate_token_sequences
+from data.dataset import build_external_eval_dataset, build_train_eval_datasets, collate_token_sequences
 from models.staged_model import StagedLatentAdaptationModel
 from training.config_loader import RuntimeConfig, build_model_from_variant
 from training.latent_cache import LATENT_CACHE_STATUS
-from training.loop import run_training
+from training.loop import evaluate, run_training
 from training.run_metadata import RunMetadata
 
 
@@ -26,9 +26,10 @@ class TrainingComponents:
     model: StagedLatentAdaptationModel
     train_loader: DataLoader[dict[str, torch.Tensor]]
     eval_loader: DataLoader[dict[str, torch.Tensor]]
+    external_eval_loaders: dict[str, DataLoader[dict[str, torch.Tensor]]]
     optimizer: torch.optim.Optimizer | None
     trainable_params: int
-    preprocessing_summary: dict[str, int]
+    preprocessing_summary: dict[str, Any]
     tokenizer: Any | None
 
 
@@ -46,7 +47,6 @@ class TrainResult:
     checkpoint_path: Path
 
 
-
 def _set_seed(seed: int, deterministic: bool) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -62,6 +62,21 @@ def _count_trainable_params(model: torch.nn.Module) -> int:
 
 def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
+
+
+def _to_metrics_payload(eval_result: Any) -> dict[str, Any]:
+    return {
+        "eval_loss": float(eval_result.loss),
+        "stage_2_token_accuracy": eval_result.stage_2_token_accuracy,
+        "stage_3_token_accuracy": eval_result.stage_3_token_accuracy,
+        "final_answer_accuracy": eval_result.final_answer_accuracy,
+        "final_answer_exact_match": eval_result.final_answer_exact_match,
+        "final_answer_normalized_match": eval_result.final_answer_normalized_match,
+        "normalized_numeric_answer_accuracy": eval_result.normalized_numeric_answer_accuracy,
+        "symbolic_answer_accuracy": eval_result.symbolic_answer_accuracy,
+        "answer_eval_string_count": int(eval_result.answer_eval_string_count),
+        "answer_eval_numeric_count": int(eval_result.answer_eval_numeric_count),
+    }
 
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
@@ -97,13 +112,31 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     train_loader = DataLoader(bundle.train, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
     eval_loader = DataLoader(bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
 
+    external_eval_loaders: dict[str, DataLoader[dict[str, torch.Tensor]]] = {}
+    external_summaries: dict[str, dict[str, Any]] = {}
+    for item in runtime.dataset.get("external_evaluations", []):
+        if not isinstance(item, dict):
+            raise ValueError("dataset.external_evaluations entries must be objects")
+        external_name = str(item.get("name", "")).strip().lower()
+        if not external_name:
+            raise ValueError("dataset.external_evaluations entry missing non-empty 'name'")
+        settings = dict(dataset_settings)
+        settings.update({k: v for k, v in item.items() if k != "name"})
+        ext_bundle = build_external_eval_dataset(name=external_name, settings=settings, tokenizer=tokenizer)
+        external_eval_loaders[external_name] = DataLoader(ext_bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
+        external_summaries[external_name] = ext_bundle.preprocessing_summary
+
     trainable_params = _count_trainable_params(model)
     trainable_tensors = [p for p in model.parameters() if p.requires_grad]
     optimizer = None
     if trainable_tensors:
         optimizer = torch.optim.AdamW(trainable_tensors, lr=runtime.training.learning_rate, weight_decay=runtime.training.weight_decay)
 
-    return TrainingComponents(runtime=runtime, model=model, train_loader=train_loader, eval_loader=eval_loader, optimizer=optimizer, trainable_params=trainable_params, preprocessing_summary=bundle.preprocessing_summary, tokenizer=tokenizer)
+    preprocessing_summary: dict[str, Any] = dict(bundle.preprocessing_summary)
+    if external_summaries:
+        preprocessing_summary["external_evaluations"] = external_summaries
+
+    return TrainingComponents(runtime=runtime, model=model, train_loader=train_loader, eval_loader=eval_loader, external_eval_loaders=external_eval_loaders, optimizer=optimizer, trainable_params=trainable_params, preprocessing_summary=preprocessing_summary, tokenizer=tokenizer)
 
 
 def run_training_loop(*, components: TrainingComponents, run_name: str, config_name: str = "unknown") -> TrainResult:
@@ -122,23 +155,45 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     (out_dir / "config.json").write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
     (out_dir / "dataset_preprocessing_summary.json").write_text(json.dumps(components.preprocessing_summary, indent=2), encoding="utf-8")
 
+    base_max_steps = int(runtime.training.max_steps)
+    recurrence_steps = int(runtime.variant.refiner.num_steps if runtime.variant.refiner.enabled else 1)
+    effective_forward_passes = recurrence_steps
+    compute = runtime.training.compute_control
+    adjusted_max_steps = base_max_steps
+    max_train_tokens: int | None = None
+    max_wall_time_seconds: float | None = None
+    if compute.enabled:
+        if compute.mode == "effective_forward_passes":
+            adjusted_max_steps = max(1, int(base_max_steps / max(effective_forward_passes, 1)))
+        elif compute.mode == "tokens":
+            if compute.max_tokens is None:
+                raise ValueError("compute_control.tokens requested but max_tokens is not configured")
+            max_train_tokens = int(compute.max_tokens)
+        elif compute.mode == "wall_time":
+            if compute.max_wall_time_seconds is None:
+                raise ValueError("compute_control.wall_time requested but max_wall_time_seconds is not configured")
+            max_wall_time_seconds = float(compute.max_wall_time_seconds)
+        else:
+            raise ValueError(f"Unsupported compute control mode '{compute.mode}'")
+
     training_summary = run_training(
         model=components.model,
         train_loader=components.train_loader,
         eval_loader=components.eval_loader,
         optimizer=components.optimizer,
         num_epochs=runtime.training.num_epochs,
-        max_steps=runtime.training.max_steps,
+        max_steps=adjusted_max_steps,
         eval_interval_steps=runtime.training.eval_interval_steps,
         eval_enabled=runtime.training.eval_enabled,
         tokenizer=components.tokenizer,
+        max_train_tokens=max_train_tokens,
+        max_wall_time_seconds=max_wall_time_seconds,
     )
 
     checkpoint_path = out_dir / "checkpoint.pt"
     torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
 
     total_params = _count_total_params(components.model)
-    recurrence_steps = int(runtime.variant.refiner.num_steps if runtime.variant.refiner.enabled else 1)
     metrics = {
         "run_name": run_name,
         "config_name": config_name,
@@ -167,7 +222,10 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "architecture_type": runtime.variant.base.architecture_type,
         "model_name": runtime.variant.base.model_name,
         "recurrence_steps": recurrence_steps,
-        "effective_forward_passes_per_example": recurrence_steps,
+        "effective_forward_passes_per_example": effective_forward_passes,
+        "compute_control_enabled": bool(compute.enabled),
+        "compute_control_mode": compute.mode,
+        "adjusted_max_steps": int(adjusted_max_steps),
         "global_steps_completed": int(training_summary["global_steps"]),
         "epochs_completed": int(training_summary["epochs_completed"]),
         "backend": components.model.base_model.backend,
@@ -209,7 +267,17 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "answer_eval_numeric_abs_tolerance": float(training_summary.get("answer_eval_numeric_abs_tolerance", 0.0)),
         "answer_eval_numeric_multi_value_rule": training_summary.get("answer_eval_numeric_multi_value_rule", "strict_set"),
         "answer_eval_answer_length_histogram": training_summary.get("answer_eval_answer_length_histogram", {}),
+        "ablation_recurrent_steps": runtime.raw.get("ablation", {}).get("recurrent_steps") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
+        "ablation_lora_rank": runtime.raw.get("ablation", {}).get("lora_rank") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
     }
+
+    external_eval_metrics: dict[str, dict[str, Any]] = {}
+    for ds_name, ds_loader in components.external_eval_loaders.items():
+        ds_result = evaluate(model=components.model, dataloader=ds_loader, tokenizer=components.tokenizer)
+        external_eval_metrics[ds_name] = _to_metrics_payload(ds_result)
+    if external_eval_metrics:
+        metrics["external_eval"] = external_eval_metrics
+
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     answer_eval_diagnostics = {
@@ -242,6 +310,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "numeric_multi_value_rule": metrics["answer_eval_numeric_multi_value_rule"],
         "notes": "Answer metrics decode only tokens in answer_mask/final_answer_mask (answer span, excluding the literal 'Final Answer:' header). stage_3_token_accuracy still uses the full stage3_mask section. Symbolic equivalence is attempted only for expression-like answers; parse failures are counted explicitly.",
     }
+    if external_eval_metrics:
+        answer_eval_diagnostics["external_eval"] = external_eval_metrics
     (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
 
     return TrainResult(

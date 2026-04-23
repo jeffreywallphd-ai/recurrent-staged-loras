@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 import json
@@ -22,9 +22,11 @@ SHARED_DATASET_DEFAULTS: dict[str, Any] = {
         "cache_dir": "./.cache/hf_datasets",
         "split": "train",
     },
+    "external_evaluations": [],
 }
 
 SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": "outputs/default"}
+SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
 
 
 def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -32,10 +34,19 @@ def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     dataset_name = str(dataset_raw.get("name", SHARED_DATASET_DEFAULTS["name"]))
     settings = dict(SHARED_DATASET_DEFAULTS["settings"])
     settings.update(dict(dataset_raw.get("settings", {})))
+    external_evaluations = list(dataset_raw.get("external_evaluations", SHARED_DATASET_DEFAULTS["external_evaluations"]))
 
     output_raw = dict(SHARED_OUTPUT_DEFAULTS)
     output_raw.update(dict(raw.get("output", {})))
-    return {"name": dataset_name, "settings": settings}, output_raw
+    return {"name": dataset_name, "settings": settings, "external_evaluations": external_evaluations}, output_raw
+
+
+@dataclass(slots=True)
+class ComputeControlConfig:
+    enabled: bool = False
+    mode: str = "effective_forward_passes"
+    max_wall_time_seconds: float | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -50,6 +61,7 @@ class TrainingConfig:
     checkpoint_interval_steps: int = 100
     eval_enabled: bool = True
     deterministic: bool = False
+    compute_control: ComputeControlConfig = field(default_factory=ComputeControlConfig)
 
 
 @dataclass(slots=True)
@@ -81,10 +93,22 @@ def load_variant_config(path: str | Path) -> VariantConfig:
     return parse_variant_config(load_experiment_config(path))
 
 
-def load_runtime_config(path: str | Path) -> RuntimeConfig:
-    raw = load_experiment_config(path)
+def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
     training_raw = raw.get("training", {})
     dataset_resolved, output_resolved = _merge_runtime_defaults(raw)
+    compute_raw = dict(training_raw.get("compute_control", {}))
+    compute = ComputeControlConfig(
+        enabled=bool(compute_raw.get("enabled", False)),
+        mode=str(compute_raw.get("mode", "effective_forward_passes")),
+        max_wall_time_seconds=(float(compute_raw["max_wall_time_seconds"]) if "max_wall_time_seconds" in compute_raw else None),
+        max_tokens=(int(compute_raw["max_tokens"]) if "max_tokens" in compute_raw else None),
+    )
+    if compute.mode not in SUPPORTED_COMPUTE_CONTROL_MODES:
+        raise ValueError(f"Unsupported compute_control mode '{compute.mode}'. Expected one of {sorted(SUPPORTED_COMPUTE_CONTROL_MODES)}")
+    if compute.enabled and compute.mode == "wall_time" and (compute.max_wall_time_seconds is None or compute.max_wall_time_seconds <= 0):
+        raise ValueError("compute_control.mode=wall_time requires positive training.compute_control.max_wall_time_seconds")
+    if compute.enabled and compute.mode == "tokens" and (compute.max_tokens is None or compute.max_tokens <= 0):
+        raise ValueError("compute_control.mode=tokens requires positive training.compute_control.max_tokens")
 
     training = TrainingConfig(
         batch_size=int(training_raw.get("batch_size", 1)),
@@ -97,6 +121,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 100)),
         eval_enabled=bool(training_raw.get("eval_enabled", True)),
         deterministic=bool(training_raw.get("deterministic", False)),
+        compute_control=compute,
     )
 
     return RuntimeConfig(
@@ -107,6 +132,10 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         output={"dir": str(output_resolved["dir"])},
         raw=raw,
     )
+
+
+def load_runtime_config(path: str | Path) -> RuntimeConfig:
+    return load_runtime_config_from_raw(load_experiment_config(path))
 
 
 def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationModel:

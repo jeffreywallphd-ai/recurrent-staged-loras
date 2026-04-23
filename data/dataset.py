@@ -63,6 +63,13 @@ def _build_staged_text(
     return full, stage1_span, stage2_span, stage3_span, answer_span
 
 
+def _build_plain_text(problem: str, answer: str) -> tuple[str, tuple[int, int]]:
+    prompt = f"Question:\n{problem.strip()}\n\nAnswer:\n"
+    target = answer.strip()
+    full = f"{prompt}{target}"
+    return full, (len(prompt), len(full))
+
+
 def _char_spans_to_token_mask(offset_mapping: list[tuple[int, int]], span: tuple[int, int]) -> torch.Tensor:
     s, e = span
     mask = []
@@ -70,6 +77,50 @@ def _char_spans_to_token_mask(offset_mapping: list[tuple[int, int]], span: tuple
         active = tok_e > s and tok_s < e
         mask.append(active)
     return torch.tensor(mask, dtype=torch.bool)
+
+
+def _example_from_text(
+    *,
+    tokenizer: Any,
+    text: str,
+    answer_span: tuple[int, int],
+    max_seq_length: int,
+    answer_text: str,
+    source_signature: str,
+) -> tuple[Example | None, bool, bool]:
+    tok = tokenizer(
+        text,
+        truncation=True,
+        max_length=max_seq_length,
+        return_offsets_mapping=True,
+        add_special_tokens=True,
+    )
+    input_ids = torch.tensor(tok["input_ids"], dtype=torch.long)
+    offsets = [(int(a), int(b)) for a, b in tok["offset_mapping"]]
+    answer_mask = _char_spans_to_token_mask(offsets, answer_span)
+    stage3_mask = torch.ones_like(answer_mask, dtype=torch.bool)
+
+    max_char_covered = max((b for _a, b in offsets), default=0)
+    truncated = max_char_covered < len(text)
+    answer_truncated = answer_span[1] > max_char_covered
+    if int(answer_mask.sum().item()) == 0:
+        return None, truncated, answer_truncated
+
+    labels = input_ids.clone()
+    final_answer_text = answer_text.strip()
+    ex: Example = {
+        "input_ids": input_ids,
+        "labels": labels,
+        "stage1_mask": torch.zeros_like(answer_mask, dtype=torch.bool),
+        "stage2_mask": torch.zeros_like(answer_mask, dtype=torch.bool),
+        "stage3_mask": stage3_mask,
+        "answer_mask": answer_mask,
+        "final_answer_mask": answer_mask,
+        "answer_text": final_answer_text,
+        "answer_text_normalized": normalize_answer_text(final_answer_text),
+        "source_signature": source_signature,
+    }
+    return ex, truncated, answer_truncated
 
 
 def build_staged_examples_from_hf(
@@ -183,6 +234,88 @@ def build_staged_examples_from_hf(
         "samples_with_answer_span_truncated": answer_span_truncated,
     }
     return examples, stats
+
+
+def build_external_examples_from_hf(
+    *,
+    dataset_name: str,
+    split: str,
+    subset_size: int,
+    seed: int,
+    max_seq_length: int,
+    tokenizer: Any,
+    cache_dir: str | None,
+) -> tuple[list[Example], dict[str, int]]:
+    from datasets import load_dataset  # type: ignore
+
+    key = dataset_name.lower()
+    if key == "gsm8k":
+        ds = load_dataset("gsm8k", "main", split=split, cache_dir=cache_dir)
+        question_key, answer_key = "question", "answer"
+        extract_answer = lambda value: str(value).split("####")[-1].strip()  # noqa: E731
+    elif key == "math":
+        ds = load_dataset("competition_math", split=split, cache_dir=cache_dir)
+        question_key, answer_key = "problem", "solution"
+        extract_answer = lambda value: _extract_reasoning_and_answer(str(value))[1].strip()  # noqa: E731
+    elif key == "svamp":
+        ds = load_dataset("ChilleD/SVAMP", split=split, cache_dir=cache_dir)
+        question_key, answer_key = "Question", "Answer"
+        extract_answer = lambda value: str(value).strip()  # noqa: E731
+    else:
+        raise ValueError(f"Unsupported external evaluation dataset '{dataset_name}'.")
+
+    order = list(range(len(ds)))
+    rng = random.Random(seed)
+    rng.shuffle(order)
+    selected = order[:subset_size] if subset_size > 0 else order
+
+    examples: list[Example] = []
+    truncated = 0
+    answer_truncated = 0
+    dropped = 0
+    numeric_answers = 0
+    for idx in selected:
+        row = ds[int(idx)]
+        problem = str(row.get(question_key, "")).strip()
+        raw_answer = row.get(answer_key, "")
+        answer = extract_answer(raw_answer)
+        if not problem or not answer:
+            dropped += 1
+            continue
+        text, span = _build_plain_text(problem, answer)
+        ex, ex_trunc, ans_trunc = _example_from_text(
+            tokenizer=tokenizer,
+            text=text,
+            answer_span=span,
+            max_seq_length=max_seq_length,
+            answer_text=answer,
+            source_signature=normalize_answer_text(problem, semantic_numeric=False) + " || " + normalize_answer_text(answer, semantic_numeric=False),
+        )
+        if ex_trunc:
+            truncated += 1
+        if ans_trunc:
+            answer_truncated += 1
+        if ex is None:
+            dropped += 1
+            continue
+        if extract_numeric_values(answer):
+            numeric_answers += 1
+        examples.append(ex)
+
+    if not examples:
+        raise RuntimeError(f"No valid examples were built for external dataset '{dataset_name}'.")
+
+    return examples, {
+        "raw_selected_examples": len(selected),
+        "kept_examples": len(examples),
+        "filtered_examples_total": dropped,
+        "samples_with_valid_answer_spans": len(examples),
+        "samples_with_numeric_answers": numeric_answers,
+        "samples_truncated_to_max_seq_length": truncated,
+        "samples_with_answer_span_truncated": answer_truncated,
+        "external_dataset_name": key,
+        "external_split": split,
+    }
 
 
 def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: int, seed: int) -> list[Example]:
@@ -334,3 +467,18 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
         eval=SequenceDataset(eval_examples),
         preprocessing_summary=preprocessing_summary,
     )
+
+
+def build_external_eval_dataset(name: str, settings: dict[str, Any], tokenizer: Any | None) -> DatasetBundle:
+    if tokenizer is None:
+        raise ValueError("Tokenizer is required for external evaluation datasets.")
+    examples, summary = build_external_examples_from_hf(
+        dataset_name=name,
+        split=str(settings.get("split", "test")),
+        subset_size=int(settings.get("subset_size", 0)),
+        seed=int(settings.get("seed", 0)),
+        max_seq_length=int(settings.get("max_seq_length", 2048)),
+        tokenizer=tokenizer,
+        cache_dir=settings.get("cache_dir"),
+    )
+    return DatasetBundle(train=SequenceDataset(examples), eval=SequenceDataset(examples), preprocessing_summary=summary)

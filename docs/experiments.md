@@ -23,6 +23,19 @@ See `docs/study_matrix.md` for reportable vs pilot presets, required seeds, and 
 ## Dataset and staging protocol
 
 Default dataset is `meta-math/MetaMathQA` (`dataset.name = metamath_qa`).
+Optional external evaluation datasets can be configured with:
+
+```json
+"dataset": {
+  "external_evaluations": [
+    {"name": "gsm8k", "split": "test"},
+    {"name": "math", "split": "test"},
+    {"name": "svamp", "split": "test"}
+  ]
+}
+```
+
+External evaluation is opt-in only. When enabled, each dataset is evaluated after primary eval and written under `external_eval.<dataset>.*` in `metrics.json`.
 
 Each sample is converted into a staged sequence:
 
@@ -87,6 +100,43 @@ Comparisons report:
 - tokens/sec and total wall-clock time.
 
 These are used together with quality metrics to interpret performance vs compute budget.
+
+### Compute-controlled comparison (opt-in)
+
+Config:
+
+```json
+"training": {
+  "compute_control": {
+    "enabled": true,
+    "mode": "effective_forward_passes"
+  }
+}
+```
+
+Supported modes:
+- `effective_forward_passes`: adjusts max training steps by recurrence factor.
+- `tokens`: enforces `training.compute_control.max_tokens`.
+- `wall_time`: enforces `training.compute_control.max_wall_time_seconds`.
+
+Run outputs now include: `compute_control_enabled`, `compute_control_mode`, `effective_forward_passes_per_example`, `adjusted_max_steps`.
+
+### Ablation design (opt-in)
+
+Config:
+
+```json
+"ablations": {
+  "recurrent_steps": [1, 2, 3, 4],
+  "lora_rank": [4, 8, 16]
+}
+```
+
+`scripts/run_all_experiments.py` expands full combinations, applies overrides to:
+- `model.latent_refiner.num_recurrent_steps`
+- `model.latent_refiner.adapter.rank`
+
+Derived run names append `_r{steps}_rank{rank}` and metrics include `ablation_recurrent_steps` and `ablation_lora_rank`. Baseline confirmatory runs remain separate from ablation runs by default.
 
 ## Multi-seed aggregation protocol
 

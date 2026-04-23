@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from data.dataset import SequenceDataset, collate_token_sequences
 from models.config import parse_variant_config
-from training.config_loader import RuntimeConfig, TrainingConfig
+from training.config_loader import RuntimeConfig, TrainingConfig, load_runtime_config_from_raw
 from training.engine import build_training_components, run_training_loop
 from training.loop import evaluate, run_training
 from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
@@ -381,3 +381,41 @@ def test_aggregates_include_stage_token_metrics(tmp_path: Path) -> None:
     metrics = aggregates[0]["metrics"]
     assert "stage_2_token_accuracy" in metrics
     assert "stage_3_token_accuracy" in metrics
+
+
+def test_compute_control_effective_forward_passes_adjusts_steps(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path, baseline="stage_specialized_recurrence")
+    rt.training.max_steps = 12
+    rt.raw = {"ablation": {}}
+    rt.training.compute_control.enabled = True
+    rt.training.compute_control.mode = "effective_forward_passes"
+    result = run_training_loop(components=build_training_components(rt), run_name="cc", config_name="unit")
+    metrics = json.loads((result.output_dir / "metrics.json").read_text())
+    assert metrics["compute_control_enabled"] is True
+    assert metrics["compute_control_mode"] == "effective_forward_passes"
+    assert metrics["adjusted_max_steps"] == 4
+
+
+def test_ablation_config_expansion_in_run_script(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "ablation.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {
+                    "name": "test/tiny",
+                    "architecture_type": "dense",
+                    "standard_lora": {"enabled": False},
+                    "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}},
+                },
+                "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 12, "sequence_length": 9, "eval_fraction": 0.25, "seed": 1}},
+                "training": {"batch_size": 2, "num_epochs": 1, "max_steps": 1, "eval_interval_steps": 1, "eval_enabled": True},
+                "ablations": {"recurrent_steps": [1, 2], "lora_rank": [4, 8]},
+            }
+        )
+    )
+    subprocess.run([sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg_path), "--seeds", "1", "--preset-scope", "all"], check=True)
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    assert len(summary["runs"]) == 4
+    assert all(run.get("ablation_recurrent_steps") in [1, 2] for run in summary["runs"])
+    assert all(run.get("ablation_lora_rank") in [4, 8] for run in summary["runs"])

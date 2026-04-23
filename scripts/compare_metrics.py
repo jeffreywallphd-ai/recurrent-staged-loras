@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("metrics", nargs="*", help="Paths to run-level metrics.json files")
     parser.add_argument("--aggregates", nargs="*", default=[], help="Paths to aggregate artifact JSON files")
     parser.add_argument("--view", choices=["all", "runs", "aggregates"], default="all")
+    parser.add_argument("--dataset", default=None, help="Filter by dataset namespace (primary or external dataset name)")
+    parser.add_argument("--compute-mode", default=None, help="Filter by compute_control_mode")
+    parser.add_argument("--ablation-recurrent-steps", type=int, default=None)
+    parser.add_argument("--ablation-lora-rank", type=int, default=None)
     return parser.parse_args()
 
 
@@ -109,6 +113,17 @@ def main() -> None:
         path = Path(raw_path)
         metric = _load(path)
         if isinstance(metric, dict):
+            if args.compute_mode and str(metric.get("compute_control_mode")) != args.compute_mode:
+                continue
+            if args.ablation_recurrent_steps is not None and int(metric.get("ablation_recurrent_steps") or -1) != args.ablation_recurrent_steps:
+                continue
+            if args.ablation_lora_rank is not None and int(metric.get("ablation_lora_rank") or -1) != args.ablation_lora_rank:
+                continue
+            dataset_filter = args.dataset
+            if dataset_filter and dataset_filter != "primary":
+                external = dict(metric.get("external_eval", {}))
+                if dataset_filter not in external:
+                    continue
             run_rows.append({**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "path": str(path)})
 
     if run_rows and args.view in {"all", "runs"}:
