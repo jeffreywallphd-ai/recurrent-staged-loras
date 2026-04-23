@@ -16,6 +16,10 @@
 
 Dense and MoE configs are paired per baseline for controlled cross-architecture comparison.
 
+## Explicit study matrix
+
+See `docs/study_matrix.md` for reportable vs pilot presets, required seeds, and fairness metrics.
+
 ## Dataset and staging protocol
 
 Default dataset is `meta-math/MetaMathQA` (`dataset.name = metamath_qa`).
@@ -47,19 +51,22 @@ Per-run preprocessing statistics are written to `dataset_preprocessing_summary.j
 - Final eval runs at the end unless the final step already landed on an interval boundary.
 - Eval token/time totals include all interval eval passes plus final eval (when present).
 
+## Answer-level metrics semantics
+
+- `final_answer_accuracy`: normalized string match on decoded stage-3 span. Normalization lowercases, removes `$`, unwraps simple `\\boxed{...}`, squashes whitespace, and strips trailing punctuation.
+- `final_answer_exact_match`: strict raw-string equality between decoded stage-3 prediction and extracted answer text.
+- `normalized_numeric_answer_accuracy`: numeric comparison using float normalization from decoded prediction vs normalized numeric gold label.
+
+Limitations:
+- String normalization is intentionally conservative and does not parse full symbolic/math equivalence.
+- Numeric matching uses first detectable number and cannot validate multi-value expressions.
+
 ## Canonical run-level metrics schema (`metrics.json`)
 
-- Identity/config: `run_name`, `config_name`, `baseline_name`, `dataset_name`, `seed`, `architecture_type`, `model_name`
-- Data volume: `dataset_train_examples`, `dataset_eval_examples`
-- Loss/perplexity: `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`
-- Stage token metrics: `stage_2_token_accuracy`, `stage_3_token_accuracy`
-- Final-answer metrics (decoded from stage-3 span):
-  - `final_answer_accuracy`
-  - `final_answer_exact_match`
-  - `normalized_numeric_answer_accuracy`
-- Throughput/time: `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`
-- Parameterization/fairness: `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`
-- Completion/runtime: `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`
+Official fields:
+`run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_train_examples`, `dataset_eval_examples`, `seed`, `architecture_type`, `model_name`, `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `stage_2_token_accuracy`, `stage_3_token_accuracy`, `final_answer_accuracy`, `final_answer_exact_match`, `normalized_numeric_answer_accuracy`, `answer_eval_string_count`, `answer_eval_numeric_count`, `answer_eval_skipped_no_stage3`, `answer_eval_skipped_missing_answer_text`, `answer_eval_skipped_missing_numeric_target`, `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `steps_per_second`, `seconds_per_step`, `trainable_params`, `total_params`, `trainable_param_fraction`, `recurrence_steps`, `effective_forward_passes_per_example`, `global_steps_completed`, `epochs_completed`, `backend`, `latent_cache`.
+
+Each run also writes `answer_eval_diagnostics.json` with answer-scoring counts and skip reasons.
 
 ## Compute fairness protocol
 
@@ -72,11 +79,12 @@ These are used together with quality metrics to interpret performance vs compute
 
 ## Multi-seed aggregation protocol
 
-`python scripts/run_all_experiments.py --seeds 11 22 33` writes:
+`python scripts/run_all_experiments.py --config-dir experiments/configs --seeds 11 22 33 --preset-scope study` writes:
 - per-run `metrics.json` files,
 - `outputs/summary.json` with `runs` and grouped `aggregates`,
 - `outputs/aggregates.json` (aggregate-only artifact),
-- `outputs/summary.csv` with both run rows and aggregate rows.
+- `outputs/summary.csv` with both run rows and aggregate rows,
+- `outputs/report_table.csv` with report-ready run and aggregate records.
 
 Aggregates are grouped by:
 - `baseline_name`
@@ -97,7 +105,6 @@ For each group, mean/std are reported for:
 
 ## Presets: study vs pilot
 
-- **Study presets:** base config names (e.g., `standard_lora.json`, `moe_standard_lora.json`) and tuned for longer runs.
+- **Study presets:** base config names (for reportable runs).
 - **Pilot presets:** `*_pilot.json` variants for smoke checks and quick iteration.
-
-Use study presets for reported comparisons and pilot presets only for debugging/infrastructure validation.
+- Default orchestration mode is reportable study runs only: `--preset-scope study`.

@@ -151,6 +151,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "final_eval_loss": float(training_summary["eval_loss"]),
         "best_eval_loss": float(training_summary["best_eval_loss"]),
         "eval_perplexity": float(training_summary["eval_perplexity"]),
+        "train_perplexity": float(training_summary["train_perplexity"]),
         "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
         "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
         "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
@@ -176,8 +177,23 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "stage_3_token_accuracy": training_summary.get("stage_3_token_accuracy"),
         "stage_2_token_accuracy": training_summary.get("stage_2_token_accuracy"),
         "normalized_numeric_answer_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
+        "answer_eval_string_count": int(training_summary.get("answer_eval_string_count", 0)),
+        "answer_eval_numeric_count": int(training_summary.get("answer_eval_numeric_count", 0)),
+        "answer_eval_skipped_no_stage3": int(training_summary.get("answer_eval_skipped_no_stage3", 0)),
+        "answer_eval_skipped_missing_answer_text": int(training_summary.get("answer_eval_skipped_missing_answer_text", 0)),
+        "answer_eval_skipped_missing_numeric_target": int(training_summary.get("answer_eval_skipped_missing_numeric_target", 0)),
     }
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    answer_eval_diagnostics = {
+        "string_answer_scored": metrics["answer_eval_string_count"],
+        "numeric_answer_scored": metrics["answer_eval_numeric_count"],
+        "skipped_no_stage3": metrics["answer_eval_skipped_no_stage3"],
+        "skipped_missing_answer_text": metrics["answer_eval_skipped_missing_answer_text"],
+        "skipped_missing_numeric_target": metrics["answer_eval_skipped_missing_numeric_target"],
+        "notes": "String metrics use normalized decoded stage-3 answers. Exact match uses strict raw string equality; numeric accuracy uses normalized floating-point extraction.",
+    }
+    (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
 
     return TrainResult(
         final_train_loss=metrics["final_train_loss"],
