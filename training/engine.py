@@ -35,8 +35,11 @@ class TrainingComponents:
 class TrainResult:
     final_train_loss: float
     final_eval_loss: float
+    best_eval_loss: float
     trainable_params: int
+    total_params: int
     global_steps: int
+    epochs_completed: int
     backend: str
     output_dir: Path
     checkpoint_path: Path
@@ -56,6 +59,10 @@ def _set_seed(seed: int, deterministic: bool) -> None:
 
 def _count_trainable_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters() if param.requires_grad)
+
+
+def _count_total_params(model: torch.nn.Module) -> int:
+    return sum(param.numel() for param in model.parameters())
 
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
@@ -119,7 +126,7 @@ def run_evaluation(*, components: TrainingComponents, global_step: int, epoch_in
     )
 
 
-def run_training_loop(*, components: TrainingComponents, run_name: str) -> TrainResult:
+def run_training_loop(*, components: TrainingComponents, run_name: str, config_name: str = "unknown") -> TrainResult:
     runtime = components.runtime
     out_dir = Path(runtime.output["dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -158,24 +165,59 @@ def run_training_loop(*, components: TrainingComponents, run_name: str) -> Train
         checkpoint_path,
     )
 
+    total_params = _count_total_params(components.model)
+    trainable_param_fraction = (
+        float(components.trainable_params / total_params) if total_params > 0 else 0.0
+    )
+    dataset_settings = dict(components.runtime.dataset.get("settings", {}))
     metrics = {
+        "run_name": run_name,
+        "config_name": config_name,
         "baseline_name": runtime.baseline,
+        "dataset_name": runtime.dataset["name"],
+        "dataset_mode": dataset_settings.get("mode"),
+        "dataset_train_examples": len(components.train_loader.dataset),
+        "dataset_eval_examples": len(components.eval_loader.dataset),
+        "batch_size": runtime.training.batch_size,
+        "learning_rate": runtime.training.learning_rate,
+        "weight_decay": runtime.training.weight_decay,
+        "seed": runtime.training.seed,
+        "deterministic": runtime.training.deterministic,
+        "final_train_loss": float(training_summary["train_loss"]),
+        "final_eval_loss": float(training_summary["eval_loss"]),
+        "best_eval_loss": float(training_summary["best_eval_loss"]),
         "train_loss": float(training_summary["train_loss"]),
         "eval_loss": float(training_summary["eval_loss"]),
+        "global_steps_completed": int(training_summary["global_steps"]),
+        "epochs_completed": int(training_summary["epochs_completed"]),
         "num_steps": int(training_summary["global_steps"]),
-        "num_epochs": runtime.training.num_epochs,
+        "num_epochs": int(training_summary["epochs_completed"]),
+        "tokens_seen_train": int(training_summary["tokens_seen_train"]),
+        "tokens_seen_eval": int(training_summary["tokens_seen_eval"]),
+        "tokens_per_second_train": float(training_summary["tokens_per_second_train"]),
+        "tokens_per_second_eval": float(training_summary["tokens_per_second_eval"]),
+        "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
+        "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
+        "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
+        "seconds_per_step": float(training_summary["seconds_per_step"]),
+        "steps_per_second": float(training_summary["steps_per_second"]),
         "backend": components.model.base_model.backend,
         "trainable_params": components.trainable_params,
+        "total_params": total_params,
+        "trainable_param_fraction": trainable_param_fraction,
         "latent_cache": LATENT_CACHE_STATUS,
     }
     metrics_path = out_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     return TrainResult(
-        final_train_loss=metrics["train_loss"],
-        final_eval_loss=metrics["eval_loss"],
+        final_train_loss=metrics["final_train_loss"],
+        final_eval_loss=metrics["final_eval_loss"],
+        best_eval_loss=metrics["best_eval_loss"],
         trainable_params=components.trainable_params,
-        global_steps=metrics["num_steps"],
+        total_params=total_params,
+        global_steps=metrics["global_steps_completed"],
+        epochs_completed=metrics["epochs_completed"],
         backend=metrics["backend"],
         output_dir=out_dir,
         checkpoint_path=checkpoint_path,

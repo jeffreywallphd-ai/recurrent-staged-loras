@@ -13,6 +13,36 @@ from training.engine import build_training_components, run_training_loop
 
 
 EXPECTED_METRIC_KEYS = {"baseline_name", "train_loss", "eval_loss", "num_steps", "num_epochs"}
+EXPECTED_ADDITIONAL_METRIC_KEYS = {
+    "run_name",
+    "config_name",
+    "dataset_name",
+    "dataset_mode",
+    "dataset_train_examples",
+    "dataset_eval_examples",
+    "batch_size",
+    "learning_rate",
+    "weight_decay",
+    "seed",
+    "deterministic",
+    "final_train_loss",
+    "final_eval_loss",
+    "best_eval_loss",
+    "global_steps_completed",
+    "epochs_completed",
+    "tokens_seen_train",
+    "tokens_seen_eval",
+    "tokens_per_second_train",
+    "tokens_per_second_eval",
+    "wall_time_seconds_total",
+    "wall_time_seconds_train",
+    "wall_time_seconds_eval",
+    "seconds_per_step",
+    "steps_per_second",
+    "trainable_params",
+    "total_params",
+    "trainable_param_fraction",
+}
 
 
 def _run_with_temp_output(config_name: str, tmp_path: Path) -> tuple[Path, dict[str, object]]:
@@ -20,7 +50,7 @@ def _run_with_temp_output(config_name: str, tmp_path: Path) -> tuple[Path, dict[
     runtime.output["dir"] = str(tmp_path / config_name.replace(".json", ""))
 
     components = build_training_components(runtime)
-    result = run_training_loop(components=components, run_name="pytest_run")
+    result = run_training_loop(components=components, run_name="pytest_run", config_name=config_name)
 
     out_dir = result.output_dir
     assert out_dir.exists()
@@ -33,10 +63,27 @@ def _run_with_temp_output(config_name: str, tmp_path: Path) -> tuple[Path, dict[
 
     metrics = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))
     assert EXPECTED_METRIC_KEYS.issubset(metrics.keys())
+    assert EXPECTED_ADDITIONAL_METRIC_KEYS.issubset(metrics.keys())
     assert isinstance(metrics["num_steps"], int)
     assert metrics["num_steps"] == runtime.training.max_steps
     assert math.isfinite(float(metrics["train_loss"]))
     assert math.isfinite(float(metrics["eval_loss"]))
+    assert math.isfinite(float(metrics["final_train_loss"]))
+    assert math.isfinite(float(metrics["final_eval_loss"]))
+    assert math.isfinite(float(metrics["best_eval_loss"]))
+    assert int(metrics["global_steps_completed"]) == runtime.training.max_steps
+    assert int(metrics["epochs_completed"]) >= 1
+    assert int(metrics["tokens_seen_train"]) > 0
+    assert int(metrics["tokens_seen_eval"]) > 0
+    assert float(metrics["wall_time_seconds_total"]) >= 0.0
+    assert float(metrics["wall_time_seconds_train"]) >= 0.0
+    assert float(metrics["wall_time_seconds_eval"]) >= 0.0
+    assert math.isfinite(float(metrics["tokens_per_second_train"]))
+    assert math.isfinite(float(metrics["tokens_per_second_eval"]))
+    assert math.isfinite(float(metrics["seconds_per_step"]))
+    assert math.isfinite(float(metrics["steps_per_second"]))
+    assert float(metrics["trainable_param_fraction"]) >= 0.0
+    assert int(metrics["total_params"]) >= int(metrics["trainable_params"])
     return out_dir, metrics
 
 
@@ -81,7 +128,49 @@ def test_multi_run_script_produces_summary_and_outputs() -> None:
     summary_path = Path("output/summary.json")
     assert summary_path.exists()
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert "base" in summary
-    assert "standard_lora" in summary
+    assert "runs" in summary
+    assert isinstance(summary["runs"], list)
+    baselines = {run["baseline"] for run in summary["runs"]}
+    assert "base" in baselines
+    assert "standard_lora" in baselines
+    assert Path("output/summary.csv").exists()
     assert Path("output/base/base/metrics.json").exists()
     assert Path("output/standard_lora/standard_lora/metrics.json").exists()
+
+
+def test_multi_run_summary_retains_multiple_runs_for_same_baseline(tmp_path: Path) -> None:
+    custom_a = tmp_path / "base_copy_a.json"
+    custom_b = tmp_path / "base_copy_b.json"
+    source = Path("experiments/configs/base.json").read_text(encoding="utf-8")
+    custom_a.write_text(source, encoding="utf-8")
+    custom_b.write_text(source, encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_all_experiments.py",
+            "--configs",
+            str(custom_a),
+            str(custom_b),
+        ],
+        check=True,
+    )
+
+    summary = json.loads(Path("output/summary.json").read_text(encoding="utf-8"))
+    base_runs = [run for run in summary["runs"] if run["baseline"] == "base"]
+    run_names = {run["run_name"] for run in base_runs}
+    assert "base_copy_a" in run_names
+    assert "base_copy_b" in run_names
+
+
+def test_compare_metrics_script_supports_richer_schema(tmp_path: Path) -> None:
+    out_dir, _ = _run_with_temp_output("standard_lora.json", tmp_path / "compare")
+    metrics_path = out_dir / "metrics.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/compare_metrics.py", str(metrics_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "tokens_per_second_train" in result.stdout
+    assert "wall_time_seconds_total" in result.stdout
