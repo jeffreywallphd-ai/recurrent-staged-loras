@@ -20,6 +20,7 @@ DISPLAY_COLUMNS = [
     "stage_3_token_accuracy",
     "final_answer_accuracy",
     "final_answer_exact_match",
+    "final_answer_normalized_match",
     "normalized_numeric_answer_accuracy",
     "trainable_param_fraction",
     "wall_time_seconds_total",

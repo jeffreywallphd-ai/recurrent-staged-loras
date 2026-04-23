@@ -99,10 +99,9 @@ def test_interval_eval_runs_at_step_cadence() -> None:
             "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
             "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
             "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
-            "final_answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
             "answer_text": "3 4",
             "answer_text_normalized": "3 4",
-            "answer_numeric_normalized": "3.0",
         }
         for _ in range(6)
     ]
@@ -131,10 +130,9 @@ def test_answer_metrics_are_not_stage3_token_proxy() -> None:
             "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
             "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
             "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
-            "final_answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
             "answer_text": "999 999",
             "answer_text_normalized": "999 999",
-            "answer_numeric_normalized": "999.0",
         }
     ]
     loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
@@ -177,10 +175,9 @@ def test_final_answer_metrics_use_answer_span_not_stage3_header() -> None:
             "stage1_mask": torch.tensor([1, 0, 0], dtype=torch.bool),
             "stage2_mask": torch.tensor([0, 0, 0], dtype=torch.bool),
             "stage3_mask": torch.tensor([0, 1, 1], dtype=torch.bool),
-            "final_answer_mask": torch.tensor([0, 1, 0], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 1, 0], dtype=torch.bool),
             "answer_text": "5",
             "answer_text_normalized": "5",
-            "answer_numeric_normalized": "5.0",
         }
     ]
     loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
@@ -188,7 +185,52 @@ def test_final_answer_metrics_use_answer_span_not_stage3_header() -> None:
     assert eval_result.stage_3_token_accuracy == 0.5
     assert eval_result.final_answer_accuracy == 1.0
     assert eval_result.final_answer_exact_match == 1.0
+    assert eval_result.final_answer_normalized_match == 1.0
     assert eval_result.normalized_numeric_answer_accuracy == 1.0
+
+
+def test_final_answer_metrics_fail_when_answer_text_differs() -> None:
+    class _FakeOutput:
+        def __init__(self, logits: torch.Tensor) -> None:
+            self.logits = logits
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self._training = True
+            self.config = type("Cfg", (), {"refiner": type("Ref", (), {"enabled": False})()})()
+
+        def eval(self) -> None:
+            self._training = False
+
+        def train(self) -> None:
+            self._training = True
+
+        def __call__(self, *, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> _FakeOutput:
+            del attention_mask
+            batch, seq_len = input_ids.shape
+            vocab = 32
+            logits = torch.full((batch, seq_len, vocab), -1000.0)
+            logits[:, 0, 0] = 1000.0
+            logits[:, 1, 6] = 1000.0
+            return _FakeOutput(logits=logits)
+
+    examples = [
+        {
+            "input_ids": torch.tensor([2, 5, 0], dtype=torch.long),
+            "labels": torch.tensor([2, 5, 0], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 0, 0], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 1, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 1, 0], dtype=torch.bool),
+            "answer_text": "5",
+            "answer_text_normalized": "5",
+        }
+    ]
+    loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
+    eval_result = evaluate(model=_FakeModel(), dataloader=loader, tokenizer=None)
+    assert eval_result.final_answer_accuracy == 0.0
+    assert eval_result.final_answer_exact_match == 0.0
+    assert eval_result.normalized_numeric_answer_accuracy == 0.0
 
 
 def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: Path) -> None:
@@ -225,6 +267,7 @@ def test_dataset_preprocessing_summary_artifact_written(tmp_path: Path) -> None:
     stats_path = result.output_dir / "dataset_preprocessing_summary.json"
     stats = json.loads(stats_path.read_text())
     assert "kept_examples" in stats
+    assert "samples_with_valid_answer_spans" in stats
 
 
 def test_metrics_schema_matches_docs() -> None:
@@ -284,8 +327,26 @@ def test_answer_metric_definitions_documented_as_distinct() -> None:
     docs = Path("docs/experiments.md").read_text(encoding="utf-8")
     assert "final_answer_accuracy" in docs
     assert "final_answer_exact_match" in docs
+    assert "final_answer_normalized_match" in docs
     assert "strict raw-string equality" in docs
-    assert "final_answer_mask" in docs
+    assert "answer_mask" in docs
+
+
+def test_answer_eval_diagnostics_contains_extended_fields(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    result = run_training_loop(components=build_training_components(rt), run_name="diag", config_name="unit")
+    diagnostics = json.loads((result.output_dir / "answer_eval_diagnostics.json").read_text())
+    for key in [
+        "normalized_string_match_count",
+        "strict_exact_match_count",
+        "numeric_match_count",
+        "multi_value_answer_count",
+        "answer_length_distribution",
+        "failure_mode_normalized_match_but_not_exact",
+        "failure_mode_numeric_miss_but_string_match",
+        "skipped_ambiguous_numeric",
+    ]:
+        assert key in diagnostics
 
 
 def test_report_table_has_paper_facing_columns(tmp_path: Path) -> None:
