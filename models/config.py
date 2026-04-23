@@ -36,7 +36,8 @@ class RefinerConfig:
     """Configuration for the recurrent latent refiner.
 
     recurrence_mode controls whether recurrence is off, shared across steps, or
-    stage-specialized with different adapters per step.
+    stage-specialized with different adapters per step. Shared recurrence may
+    also be used without adapters for the latent_refiner_only baseline.
     """
 
     enabled: bool = False

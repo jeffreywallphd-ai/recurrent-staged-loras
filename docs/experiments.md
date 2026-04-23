@@ -10,6 +10,7 @@ Run a controlled comparison of latent adaptation strategies under the same froze
 |---|---|---|---|---|
 | Base | `experiments/configs/base.json` | No | None | Yes |
 | Standard LoRA | `experiments/configs/standard_lora.json` | No | standard LoRA | Yes |
+| Latent refiner only | `experiments/configs/latent_refiner_only.json` | Yes (`num_recurrent_steps > 1`) | None | Yes |
 | Shared recurrence | `experiments/configs/shared_recurrence.json` | Yes (`num_recurrent_steps > 1`) | shared recurrence adapter | Yes |
 | Stage-specialized recurrence | `experiments/configs/stage_specialized_recurrence.json` | Yes (`num_recurrent_steps > 1`) | per-step adapters | Yes |
 

@@ -8,6 +8,7 @@ from typing import Any
 VALID_BASELINES = {
     "base",
     "standard_lora",
+    "latent_refiner_only",
     "shared_recurrence",
     "stage_specialized_recurrence",
 }
