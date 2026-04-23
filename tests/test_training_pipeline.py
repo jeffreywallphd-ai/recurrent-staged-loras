@@ -11,7 +11,7 @@ from models.config import parse_variant_config
 from training.config_loader import RuntimeConfig, TrainingConfig
 from training.engine import build_training_components, run_training_loop
 from training.loop import evaluate, run_training
-from training.metrics_schema import AGGREGATE_METRICS, RUN_METRICS_FIELDS
+from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, RUN_METRICS_FIELDS
 
 
 def _runtime(tmp_path: Path, baseline: str = "stage_specialized_recurrence") -> RuntimeConfig:
@@ -54,6 +54,22 @@ def _runtime(tmp_path: Path, baseline: str = "stage_specialized_recurrence") -> 
     )
 
 
+def _tiny_config(tmp_path: Path, *, name: str, subset_size: int = 12) -> Path:
+    path = tmp_path / name
+    path.write_text(
+        json.dumps(
+            {
+                "baseline": "base",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none"}},
+                "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": subset_size, "sequence_length": 9, "eval_fraction": 0.25, "seed": 1}},
+                "training": {"batch_size": 2, "num_epochs": 1, "max_steps": 2, "eval_interval_steps": 1, "eval_enabled": True},
+                "output": {"dir": str(tmp_path / "out")},
+            }
+        )
+    )
+    return path
+
+
 def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
     result = run_training_loop(components=build_training_components(rt), run_name="run", config_name="unit")
@@ -67,8 +83,11 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
         "architecture_type",
         "recurrence_steps",
         "effective_forward_passes_per_example",
+        "train_perplexity",
+        "answer_eval_string_count",
     ]:
         assert key in metrics
+    assert (result.output_dir / "answer_eval_diagnostics.json").exists()
 
 
 def test_interval_eval_runs_at_step_cadence() -> None:
@@ -124,23 +143,19 @@ def test_answer_metrics_are_not_stage3_token_proxy() -> None:
 
 
 def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: Path) -> None:
-    (tmp_path / "tiny.json").write_text(json.dumps({
-        "baseline": "base",
-        "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none"}},
-        "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 12, "sequence_length": 9, "eval_fraction": 0.25, "seed": 1}},
-        "training": {"batch_size": 2, "num_epochs": 1, "max_steps": 2, "eval_interval_steps": 1, "eval_enabled": True},
-        "output": {"dir": str(tmp_path / "out")}
-    }))
+    cfg = _tiny_config(tmp_path, name="tiny.json")
     subprocess.run(
         [
             sys.executable,
             "scripts/run_all_experiments.py",
             "--configs",
-            str(tmp_path / "tiny.json"),
+            str(cfg),
             "--seeds",
             "1",
             "2",
             "3",
+            "--preset-scope",
+            "all",
         ],
         check=True,
     )
@@ -149,7 +164,10 @@ def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: P
     assert summary["aggregates"]
     for metric in AGGREGATE_METRICS:
         assert metric in summary["aggregates"][0]["metrics"]
+    for key in AGG_GROUP_BY_FIELDS:
+        assert key in summary["aggregates"][0]
     assert Path("outputs/aggregates.json").exists()
+    assert Path("outputs/report_table.csv").exists()
 
 
 def test_dataset_preprocessing_summary_artifact_written(tmp_path: Path) -> None:
@@ -164,3 +182,55 @@ def test_metrics_schema_matches_docs() -> None:
     docs = Path("docs/experiments.md").read_text(encoding="utf-8")
     for field in RUN_METRICS_FIELDS:
         assert field in docs
+
+
+def test_pilot_and_study_do_not_collapse_in_aggregate_grouping(tmp_path: Path) -> None:
+    study_cfg = _tiny_config(tmp_path, name="standard_lora.json", subset_size=12)
+    pilot_cfg = _tiny_config(tmp_path, name="standard_lora_pilot.json", subset_size=8)
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_all_experiments.py",
+            "--configs",
+            str(study_cfg),
+            str(pilot_cfg),
+            "--seeds",
+            "1",
+            "--preset-scope",
+            "all",
+        ],
+        check=True,
+    )
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    config_names = {agg["config_name"] for agg in summary["aggregates"]}
+    assert "standard_lora.json" in config_names
+    assert "standard_lora_pilot.json" in config_names
+
+
+def test_study_only_selection_excludes_pilot_configs(tmp_path: Path) -> None:
+    study_cfg = _tiny_config(tmp_path, name="base.json")
+    pilot_cfg = _tiny_config(tmp_path, name="base_pilot.json")
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_all_experiments.py",
+            "--configs",
+            str(study_cfg),
+            str(pilot_cfg),
+            "--seeds",
+            "1",
+            "--preset-scope",
+            "study",
+        ],
+        check=True,
+    )
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    assert summary["preset_scope"] == "study"
+    assert all(not str(run["config_name"]).endswith("_pilot.json") for run in summary["runs"])
+
+
+def test_answer_metric_definitions_documented_as_distinct() -> None:
+    docs = Path("docs/experiments.md").read_text(encoding="utf-8")
+    assert "final_answer_accuracy" in docs
+    assert "final_answer_exact_match" in docs
+    assert "strict raw-string equality" in docs

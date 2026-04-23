@@ -1,4 +1,4 @@
-"""Utility to compare outcome and compute metrics across runs."""
+"""Utility to compare outcome and compute metrics across run and aggregate artifacts."""
 
 from __future__ import annotations
 
@@ -6,38 +6,43 @@ import argparse
 import json
 from pathlib import Path
 
-from training.metrics_schema import RUN_METRICS_FIELDS
+from training.metrics_schema import AGG_GROUP_BY_FIELDS, RUN_METRICS_FIELDS
 
 
 DISPLAY_COLUMNS = [
     "baseline_name",
-    "config_name",
-    "dataset_name",
     "architecture_type",
     "model_name",
+    "config_name",
     "final_eval_loss",
-    "best_eval_loss",
     "eval_perplexity",
-    "stage_2_token_accuracy",
-    "stage_3_token_accuracy",
     "final_answer_accuracy",
     "final_answer_exact_match",
     "normalized_numeric_answer_accuracy",
-    "trainable_params",
     "trainable_param_fraction",
     "wall_time_seconds_total",
     "tokens_per_second_train",
     "path",
 ]
 
+AGG_DISPLAY_COLUMNS = [
+    *AGG_GROUP_BY_FIELDS,
+    "metric_name",
+    "metric_mean",
+    "metric_std",
+    "num_runs",
+    "source",
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare metrics from multiple runs")
-    parser.add_argument("metrics", nargs="+", help="Paths to metrics.json files")
+    parser.add_argument("metrics", nargs="*", help="Paths to run-level metrics.json files")
+    parser.add_argument("--aggregates", nargs="*", default=[], help="Paths to aggregate artifact JSON files")
     return parser.parse_args()
 
 
-def _load(path: Path) -> dict[str, object]:
+def _load(path: Path) -> dict[str, object] | list[dict[str, object]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -49,23 +54,71 @@ def _fmt(value: object) -> str:
     return str(value)
 
 
+def _print_table(rows: list[dict[str, object]], headers: list[str]) -> None:
+    if not rows:
+        return
+    widths = {h: max(len(h), *(len(_fmt(r.get(h))) for r in rows)) for h in headers}
+
+    def line(parts: list[str]) -> str:
+        return " | ".join(part.ljust(widths[h]) for part, h in zip(parts, headers, strict=True))
+
+    print(line(headers))
+    print("-+-".join("-" * widths[h] for h in headers))
+    for row in rows:
+        print(line([_fmt(row.get(h)) for h in headers]))
+
+
+def _flatten_aggregates(payload: object, source: str) -> list[dict[str, object]]:
+    if isinstance(payload, dict) and "aggregates" in payload:
+        payload = payload["aggregates"]
+    if not isinstance(payload, list):
+        return []
+    flat: list[dict[str, object]] = []
+    for agg in payload:
+        if not isinstance(agg, dict):
+            continue
+        metrics = agg.get("metrics", {})
+        if not isinstance(metrics, dict):
+            continue
+        for metric_name, stat in metrics.items():
+            if not isinstance(stat, dict):
+                continue
+            flat.append(
+                {
+                    **{k: agg.get(k) for k in AGG_GROUP_BY_FIELDS},
+                    "metric_name": metric_name,
+                    "metric_mean": stat.get("mean"),
+                    "metric_std": stat.get("std"),
+                    "num_runs": agg.get("num_runs"),
+                    "source": source,
+                }
+            )
+    return flat
+
+
 def main() -> None:
     args = parse_args()
-    rows = []
+
+    run_rows = []
     for raw_path in args.metrics:
         path = Path(raw_path)
         metric = _load(path)
-        rows.append({**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "path": str(path)})
+        if isinstance(metric, dict):
+            run_rows.append({**{k: metric.get(k) for k in RUN_METRICS_FIELDS}, "path": str(path)})
 
-    widths = {h: max(len(h), *(len(_fmt(r.get(h))) for r in rows)) for h in DISPLAY_COLUMNS}
+    if run_rows:
+        _print_table(run_rows, DISPLAY_COLUMNS)
 
-    def line(parts: list[str]) -> str:
-        return " | ".join(part.ljust(widths[h]) for part, h in zip(parts, DISPLAY_COLUMNS, strict=True))
+    aggregate_rows: list[dict[str, object]] = []
+    for raw_path in args.aggregates:
+        path = Path(raw_path)
+        payload = _load(path)
+        aggregate_rows.extend(_flatten_aggregates(payload, source=str(path)))
 
-    print(line(DISPLAY_COLUMNS))
-    print("-+-".join("-" * widths[h] for h in DISPLAY_COLUMNS))
-    for row in rows:
-        print(line([_fmt(row.get(h)) for h in DISPLAY_COLUMNS]))
+    if aggregate_rows:
+        print()
+        print("Paper-style aggregate mean/std summary")
+        _print_table(aggregate_rows, AGG_DISPLAY_COLUMNS)
 
 
 if __name__ == "__main__":

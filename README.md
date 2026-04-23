@@ -11,23 +11,28 @@ Controlled dense-vs-MoE adaptation study pipeline for staged supervision on Meta
 
 ## Study outputs
 
-Each run writes `metrics.json` and `dataset_preprocessing_summary.json`.
+Each run writes:
+- `metrics.json`
+- `dataset_preprocessing_summary.json`
+- `answer_eval_diagnostics.json`
 
 Multi-seed orchestration writes:
 - `outputs/summary.json` (runs + aggregates)
 - `outputs/summary.csv` (run and aggregate rows)
 - `outputs/aggregates.json` (aggregate-only artifact)
+- `outputs/report_table.csv` (paper/report-ready run + aggregate rows)
 
 ## Presets
 
 - Study presets: `experiments/configs/*.json`
 - Pilot/smoke presets: `experiments/configs/*_pilot.json`
+- Default orchestration scope is study-only (`--preset-scope study`).
 
 ## Quick start
 
 ```bash
 python -m training.train --config experiments/configs/standard_lora.json --run-name dense_lora_seed11
-python scripts/run_all_experiments.py --configs experiments/configs/base.json experiments/configs/moe_base.json --seeds 11 22 33
+python scripts/run_all_experiments.py --config-dir experiments/configs --seeds 11 22 33 --preset-scope study
 ```
 
 ## Docs
@@ -36,3 +41,4 @@ python scripts/run_all_experiments.py --configs experiments/configs/base.json ex
 - `docs/architecture.md`
 - `docs/baselines.md`
 - `docs/experiments.md`
+- `docs/study_matrix.md`

@@ -25,6 +25,11 @@ class EvalResult:
     final_answer_accuracy: float | None
     final_answer_exact_match: float | None
     normalized_numeric_answer_accuracy: float | None
+    answer_eval_string_count: int
+    answer_eval_numeric_count: int
+    answer_eval_skipped_no_stage3: int
+    answer_eval_skipped_missing_answer_text: int
+    answer_eval_skipped_missing_numeric_target: int
 
 
 def _safe_perplexity(loss: float) -> float:
@@ -41,7 +46,13 @@ def _masked_ce(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join(text.strip().lower().split())
+    # Canonicalized text metric used for final_answer_accuracy.
+    normalized = text.strip().lower()
+    normalized = re.sub(r"\$", "", normalized)
+    normalized = re.sub(r"\\boxed\{([^}]*)\}", r"\1", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = normalized.strip(" .,:;!?\n\t")
+    return normalized
 
 
 def _normalize_numeric(text: str) -> str | None:
@@ -140,9 +151,13 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     s2_correct = s2_total = 0
     s3_correct = s3_total = 0
 
-    answer_correct = answer_total = 0
-    final_exact = final_total = 0
+    normalized_correct = normalized_total = 0
+    exact_correct = exact_total = 0
     numeric_correct = numeric_total = 0
+
+    skipped_no_stage3 = 0
+    skipped_missing_answer_text = 0
+    skipped_missing_numeric_target = 0
 
     with torch.no_grad():
         for batch in dataloader:
@@ -171,21 +186,31 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                 s3_total += int(stage3_mask.sum().item())
                 s3_correct += int((pred.eq(labels) & stage3_mask).sum().item())
 
-            target_texts = batch.get("answer_text_normalized", [])
+            target_texts = batch.get("answer_text", [])
+            target_texts_normalized = batch.get("answer_text_normalized", [])
             target_numeric = batch.get("answer_numeric_normalized", [])
             for i in range(labels.shape[0]):
                 sample_mask = stage3_mask[i]
                 if int(sample_mask.sum().item()) == 0:
+                    skipped_no_stage3 += 1
                     continue
+
                 pred_answer = _decode_answer_tokens(pred[i][sample_mask], tokenizer)
                 pred_norm = _normalize_text(pred_answer)
-                gold_norm = _normalize_text(str(target_texts[i])) if i < len(target_texts) else ""
 
-                answer_total += 1
-                if pred_norm == gold_norm:
-                    answer_correct += 1
-                    final_exact += 1
-                final_total += 1
+                gold_raw = str(target_texts[i]).strip() if i < len(target_texts) else ""
+                gold_norm = str(target_texts_normalized[i]).strip() if i < len(target_texts_normalized) else ""
+                if gold_norm:
+                    normalized_total += 1
+                    if pred_norm == gold_norm:
+                        normalized_correct += 1
+                else:
+                    skipped_missing_answer_text += 1
+
+                if gold_raw:
+                    exact_total += 1
+                    if pred_answer.strip() == gold_raw:
+                        exact_correct += 1
 
                 gold_num = str(target_numeric[i]).strip() if i < len(target_numeric) else ""
                 if gold_num:
@@ -193,13 +218,15 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
                     pred_num = _normalize_numeric(pred_answer)
                     if pred_num == gold_num:
                         numeric_correct += 1
+                else:
+                    skipped_missing_numeric_target += 1
 
     model.train()
     loss = float(sum(losses) / len(losses)) if losses else float("nan")
     stage2_acc = float(s2_correct / s2_total) if s2_total > 0 else None
     stage3_acc = float(s3_correct / s3_total) if s3_total > 0 else None
-    final_acc = float(answer_correct / answer_total) if answer_total > 0 else None
-    exact = float(final_exact / final_total) if final_total > 0 else None
+    final_acc = float(normalized_correct / normalized_total) if normalized_total > 0 else None
+    exact = float(exact_correct / exact_total) if exact_total > 0 else None
     numeric_acc = float(numeric_correct / numeric_total) if numeric_total > 0 else None
     return EvalResult(
         loss=loss,
@@ -210,6 +237,11 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
         final_answer_accuracy=final_acc,
         final_answer_exact_match=exact,
         normalized_numeric_answer_accuracy=numeric_acc,
+        answer_eval_string_count=normalized_total,
+        answer_eval_numeric_count=numeric_total,
+        answer_eval_skipped_no_stage3=skipped_no_stage3,
+        answer_eval_skipped_missing_answer_text=skipped_missing_answer_text,
+        answer_eval_skipped_missing_numeric_target=skipped_missing_numeric_target,
     )
 
 
@@ -286,4 +318,9 @@ def run_training(
         "final_answer_accuracy": last_eval.final_answer_accuracy,
         "final_answer_exact_match": last_eval.final_answer_exact_match,
         "normalized_numeric_answer_accuracy": last_eval.normalized_numeric_answer_accuracy,
+        "answer_eval_string_count": int(last_eval.answer_eval_string_count),
+        "answer_eval_numeric_count": int(last_eval.answer_eval_numeric_count),
+        "answer_eval_skipped_no_stage3": int(last_eval.answer_eval_skipped_no_stage3),
+        "answer_eval_skipped_missing_answer_text": int(last_eval.answer_eval_skipped_missing_answer_text),
+        "answer_eval_skipped_missing_numeric_target": int(last_eval.answer_eval_skipped_missing_numeric_target),
     }
