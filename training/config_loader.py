@@ -13,6 +13,29 @@ from models.lora_bank import StepAwareLoRABank
 from models.recurrent_refiner import RecurrentLatentRefiner
 from models.staged_model import StagedLatentAdaptationModel
 
+SHARED_DATASET_DEFAULTS: dict[str, Any] = {
+    "name": "synthetic_integer_sequences",
+    "settings": {
+        "num_examples": 64,
+        "sequence_length": 12,
+        "eval_fraction": 0.25,
+        "seed": 0,
+    },
+}
+
+SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": "outputs/default"}
+
+
+def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    dataset_raw = raw.get("dataset", {})
+    dataset_name = str(dataset_raw.get("name", SHARED_DATASET_DEFAULTS["name"]))
+    settings = dict(SHARED_DATASET_DEFAULTS["settings"])
+    settings.update(dict(dataset_raw.get("settings", {})))
+
+    output_raw = dict(SHARED_OUTPUT_DEFAULTS)
+    output_raw.update(dict(raw.get("output", {})))
+    return {"name": dataset_name, "settings": settings}, output_raw
+
 
 @dataclass(slots=True)
 class TrainingConfig:
@@ -66,8 +89,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
     """Load runtime settings (variant + training/data/output sections)."""
     raw = load_experiment_config(path)
     training_raw = raw.get("training", {})
-    dataset_raw = raw.get("dataset", {})
-    output_raw = raw.get("output", {})
+    dataset_resolved, output_resolved = _merge_runtime_defaults(raw)
 
     training = TrainingConfig(
         batch_size=int(training_raw.get("batch_size", 4)),
@@ -84,13 +106,8 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         baseline=str(raw["baseline"]),
         variant=parse_variant_config(raw),
         training=training,
-        dataset={
-            "name": str(dataset_raw.get("name", "synthetic_integer_sequences")),
-            "settings": dict(dataset_raw.get("settings", {})),
-        },
-        output={
-            "dir": str(output_raw.get("dir", "outputs/default")),
-        },
+        dataset=dataset_resolved,
+        output={"dir": str(output_resolved["dir"])},
         raw=raw,
     )
 
