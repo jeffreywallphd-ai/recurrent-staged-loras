@@ -102,22 +102,30 @@ def test_heterogeneous_comparison_groups_raise_clear_error(tmp_path: Path) -> No
             baseline="stage_specialized_recurrence",
             seed=44,
             offset=0.2,
-            config_name="dense_stage_specialized_recurrence_pilot.json",
-        )
-    )
-    runs.append(
-        _make_run(
-            arch="dense",
-            baseline="standard_lora",
-            seed=44,
-            offset=0.0,
-            config_name="dense_standard_lora_pilot.json",
+            dataset_name="other_dataset",
         )
     )
 
     summary = _write_summary(tmp_path, runs)
-    with pytest.raises(ValueError, match="Heterogeneous comparison group"):
+    with pytest.raises(ValueError, match="Heterogeneous comparison group detected"):
         run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_confirmatory_allows_different_config_names_with_matched_family(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        if row["baseline_name"] == "stage_specialized_recurrence":
+            row["config_name"] = f"{row['architecture_type']}_stage_specialized_recurrence.json"
+        elif row["baseline_name"] == "standard_lora":
+            row["config_name"] = f"{row['architecture_type']}_standard_lora.json"
+
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False)
+    confirmatory = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
+    row = next(r for r in confirmatory if r["baseline_b"] == "standard_lora" and r["architecture_type"] == "dense")
+    assert row["config_name_a"].endswith("stage_specialized_recurrence.json")
+    assert row["config_name_b"].endswith("standard_lora.json")
 
 
 def test_confirmatory_rows_receive_holm_and_ci_fields(tmp_path: Path) -> None:
@@ -130,6 +138,7 @@ def test_confirmatory_rows_receive_holm_and_ci_fields(tmp_path: Path) -> None:
     confirmatory = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
     assert all(row["analysis_tier"] == "confirmatory" for row in confirmatory)
     assert all(row["holm_adjusted_p_value"] is not None for row in confirmatory)
+    assert all("config_name_a" in row and "config_name_b" in row for row in confirmatory)
     assert all("mean_difference_ci_low" in row and "mean_difference_ci_high" in row for row in confirmatory)
 
 
@@ -204,3 +213,47 @@ def test_statistical_filters_support_compute_control_and_ablation(tmp_path: Path
         ablation_only=False,
     )
     assert result["confirmatory_rows"] > 0
+
+
+def test_external_dataset_scope_supports_flattened_analysis(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        row["external_eval"] = {
+            "gsm8k": {
+                "eval_loss": 1.2,
+                "stage_2_token_accuracy": 0.3,
+                "stage_3_token_accuracy": 0.4,
+                "final_answer_accuracy": 0.5,
+                "final_answer_exact_match": 0.45,
+                "normalized_numeric_answer_accuracy": 0.47,
+            }
+        }
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    result = run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False, dataset_scope="external")
+    assert result["confirmatory_rows"] == 0
+    secondary = json.loads((out_dir / "statistical_analysis_secondary.json").read_text())
+    assert secondary
+    assert all(row["analysis_tier"] == "descriptive" for row in secondary)
+    assert all(row["dataset_name"] == "gsm8k" for row in secondary)
+
+
+def test_dataset_scope_all_keeps_primary_confirmatory(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        row["external_eval"] = {
+            "gsm8k": {
+                "eval_loss": 1.2,
+                "stage_2_token_accuracy": 0.3,
+                "stage_3_token_accuracy": 0.4,
+                "final_answer_accuracy": 0.5,
+                "final_answer_exact_match": 0.45,
+                "normalized_numeric_answer_accuracy": 0.47,
+            }
+        }
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False, dataset_scope="all")
+    confirmatory = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
+    assert confirmatory
+    assert all(row["dataset_name"] == "metamath_qa" for row in confirmatory)

@@ -82,7 +82,7 @@ def _has_ablation_payload(raw: dict[str, Any]) -> bool:
     ablations = raw.get("ablations", {})
     if not isinstance(ablations, dict):
         raise ValueError("ablations must be an object when provided")
-    return bool(ablations.get("recurrent_steps") or ablations.get("lora_rank"))
+    return ("recurrent_steps" in ablations) or ("lora_rank" in ablations)
 
 
 def _apply_rank_ablation(derived: dict[str, Any], rank: int) -> None:
@@ -122,9 +122,15 @@ def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, d
         return []
 
     ablations = dict(raw.get("ablations", {}))
-    recurrent_steps = list(ablations.get("recurrent_steps", []))
-    lora_ranks = list(ablations.get("lora_rank", []))
+    has_recurrent_axis = "recurrent_steps" in ablations
+    has_rank_axis = "lora_rank" in ablations
+    recurrent_steps = list(ablations.get("recurrent_steps", [])) if has_recurrent_axis else []
+    lora_ranks = list(ablations.get("lora_rank", [])) if has_rank_axis else []
     if not recurrent_steps and not lora_ranks:
+        if has_recurrent_axis:
+            raise ValueError("ablations.recurrent_steps was provided but empty; supply at least one integer step")
+        if has_rank_axis:
+            raise ValueError("ablations.lora_rank was provided but empty; supply at least one integer rank")
         only = json.loads(json.dumps(raw))
         only["run_scope"] = "confirmatory"
         only["baseline_family"] = str(raw["baseline"])
@@ -133,21 +139,28 @@ def _build_ablation_runs(config_path: Path, run_scope: str) -> list[tuple[str, d
     if _is_pilot(config_path):
         raise ValueError("Ablations must not be attached to pilot configs to avoid silent mixing with confirmatory presets")
 
-    rec_values = recurrent_steps or [int(raw.get("model", {}).get("latent_refiner", {}).get("num_recurrent_steps", 1))]
-    rank_values = lora_ranks or [
-        int(raw.get("model", {}).get("standard_lora", {}).get("rank", raw.get("model", {}).get("latent_refiner", {}).get("adapter", {}).get("rank", 8)))
-    ]
+    rec_values = recurrent_steps if has_recurrent_axis else [None]
+    rank_values = lora_ranks if has_rank_axis else [None]
     expanded: list[tuple[str, dict[str, Any], str]] = []
     for rec, rank in product(rec_values, rank_values):
         derived = json.loads(json.dumps(raw))
-        _apply_recurrent_step_ablation(derived, int(rec))
-        _apply_rank_ablation(derived, int(rank))
-        derived_baseline = f"{raw['baseline']}_r{int(rec)}_rank{int(rank)}"
+        name_parts: list[str] = []
+        if rec is not None:
+            _apply_recurrent_step_ablation(derived, int(rec))
+            name_parts.append(f"r{int(rec)}")
+        if rank is not None:
+            _apply_rank_ablation(derived, int(rank))
+            name_parts.append(f"rank{int(rank)}")
+        suffix = "_".join(name_parts)
+        derived_baseline = f"{raw['baseline']}_{suffix}"
         derived["baseline"] = derived_baseline
         derived["baseline_family"] = str(raw["baseline"])
         derived["run_scope"] = "ablation"
-        derived["ablation"] = {"recurrent_steps": int(rec), "lora_rank": int(rank)}
-        derived_name = f"{config_path.stem}__r{int(rec)}_rank{int(rank)}.json"
+        derived["ablation"] = {
+            "recurrent_steps": (int(rec) if rec is not None else None),
+            "lora_rank": (int(rank) if rank is not None else None),
+        }
+        derived_name = f"{config_path.stem}__{suffix}.json"
         expanded.append((derived_name, derived, "ablation"))
     return expanded
 
