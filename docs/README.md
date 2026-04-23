@@ -14,12 +14,12 @@ The project compares five baselines on shared data/evaluation conditions:
 
 ## Current phase
 
-This version focuses on implementation-ready scaffold behavior:
+This version focuses on a minimal trainable baseline implementation:
 
 - clean baseline semantics,
 - model forward-path composition,
 - configuration templates and typed parsing,
-- lightweight smoke tests and reproducibility metadata.
+- lightweight forward/loss/backward smoke tests and reproducibility metadata.
 
 It intentionally does **not** include full training-loop sophistication or production LoRA backend integration yet.
 

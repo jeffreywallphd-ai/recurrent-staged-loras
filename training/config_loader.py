@@ -33,6 +33,14 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
         trust_remote_code=variant.base.trust_remote_code,
     )
 
+    if variant.standard_lora.enabled:
+        base_model.enable_standard_lora(
+            rank=variant.standard_lora.rank,
+            alpha=variant.standard_lora.alpha,
+            dropout=variant.standard_lora.dropout,
+            target_modules=variant.standard_lora.target_modules,
+        )
+
     refiner = None
     if variant.refiner.enabled:
         hidden_size = variant.refiner.hidden_size or base_model.hidden_size
@@ -46,6 +54,7 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
                 alpha=variant.refiner_adapter.alpha,
                 shared_across_steps=(variant.refiner.adapter_sharing == "shared"),
                 enabled=True,
+                dropout=variant.refiner_adapter.dropout,
             )
 
         refiner = RecurrentLatentRefiner(
@@ -54,4 +63,5 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
             adapter_bank=adapter_bank,
         )
 
-    return StagedLatentAdaptationModel(config=variant, base_model=base_model, refiner=refiner)
+    model = StagedLatentAdaptationModel(config=variant, base_model=base_model, refiner=refiner)
+    return model
