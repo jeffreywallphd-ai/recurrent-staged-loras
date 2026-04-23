@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from data.dataset import build_train_eval_datasets, collate_token_sequences
 from models.staged_model import StagedLatentAdaptationModel
 from training.config_loader import RuntimeConfig, build_model_from_variant
-from training.latent_cache import LATENT_CACHE_STATUS, maybe_load_latent_cache, maybe_write_latent_cache
+from training.latent_cache import LATENT_CACHE_STATUS
 from training.loop import run_training
 from training.run_metadata import RunMetadata
 
@@ -42,9 +42,16 @@ class TrainResult:
     checkpoint_path: Path
 
 
-def _set_seed(seed: int) -> None:
+def _set_seed(seed: int, deterministic: bool) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if torch.backends.cudnn.is_available():
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
 
 def _count_trainable_params(model: torch.nn.Module) -> int:
@@ -52,14 +59,16 @@ def _count_trainable_params(model: torch.nn.Module) -> int:
 
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
-    _set_seed(runtime.training.seed)
+    _set_seed(runtime.training.seed, runtime.training.deterministic)
 
     model = build_model_from_variant(runtime.variant)
     model.train()
 
+    dataset_settings = dict(runtime.dataset.get("settings", {}))
+    dataset_settings["seed"] = runtime.training.seed
     bundle = build_train_eval_datasets(
         name=runtime.dataset["name"],
-        settings=runtime.dataset.get("settings", {}),
+        settings=dataset_settings,
         vocab_size=model.base_model.vocab_size,
     )
 
@@ -115,8 +124,6 @@ def run_training_loop(*, components: TrainingComponents, run_name: str) -> Train
     out_dir = Path(runtime.output["dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    maybe_load_latent_cache(out_dir / "latent_cache", split="train")
-
     metadata = RunMetadata(
         run_name=run_name,
         baseline=runtime.baseline,
@@ -138,6 +145,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str) -> Train
         num_epochs=runtime.training.num_epochs,
         max_steps=runtime.training.max_steps,
         eval_interval_steps=runtime.training.eval_interval_steps,
+        eval_enabled=runtime.training.eval_enabled,
     )
 
     checkpoint_path = out_dir / "checkpoint.pt"
@@ -151,25 +159,23 @@ def run_training_loop(*, components: TrainingComponents, run_name: str) -> Train
     )
 
     metrics = {
-        "baseline": runtime.baseline,
-        "backend": components.model.base_model.backend,
-        "steps": int(training_summary["global_steps"]),
-        "epochs": runtime.training.num_epochs,
+        "baseline_name": runtime.baseline,
         "train_loss": float(training_summary["train_loss"]),
         "eval_loss": float(training_summary["eval_loss"]),
+        "num_steps": int(training_summary["global_steps"]),
+        "num_epochs": runtime.training.num_epochs,
+        "backend": components.model.base_model.backend,
         "trainable_params": components.trainable_params,
         "latent_cache": LATENT_CACHE_STATUS,
     }
     metrics_path = out_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
-    maybe_write_latent_cache(out_dir / "latent_cache", split="train", payload={"status": "disabled"})
-
     return TrainResult(
         final_train_loss=metrics["train_loss"],
         final_eval_loss=metrics["eval_loss"],
         trainable_params=components.trainable_params,
-        global_steps=metrics["steps"],
+        global_steps=metrics["num_steps"],
         backend=metrics["backend"],
         output_dir=out_dir,
         checkpoint_path=checkpoint_path,

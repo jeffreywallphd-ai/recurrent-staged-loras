@@ -21,7 +21,7 @@ class EpochResult:
 def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     out = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
     logits = out.logits[:, :-1, :]
-    labels = batch["input_ids"][:, 1:]
+    labels = batch["labels"][:, 1:]
     return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1))
 
 
@@ -33,11 +33,15 @@ def train_epoch(
     max_steps: int,
     global_step_start: int,
     epoch_index: int,
-) -> EpochResult:
+    eval_loader: DataLoader[dict[str, torch.Tensor]] | None,
+    eval_interval_steps: int,
+    eval_enabled: bool,
+) -> tuple[EpochResult, float | None]:
     """Run one training epoch (possibly truncated by max_steps)."""
     model.train()
     global_step = global_step_start
     loss_values: list[float] = []
+    latest_eval_loss: float | None = None
 
     for batch in dataloader:
         if global_step >= max_steps:
@@ -54,8 +58,16 @@ def train_epoch(
 
         print(f"[train] epoch={epoch_index} step={global_step} loss={loss_values[-1]:.6f}")
 
+        if eval_enabled and eval_loader is not None and eval_interval_steps > 0 and global_step % eval_interval_steps == 0:
+            latest_eval_loss = evaluate(
+                model=model,
+                dataloader=eval_loader,
+                global_step=global_step,
+                epoch_index=epoch_index,
+            )
+
     average_loss = float(sum(loss_values) / len(loss_values)) if loss_values else float("nan")
-    return EpochResult(epoch_index=epoch_index, steps_completed=global_step - global_step_start, average_loss=average_loss)
+    return EpochResult(epoch_index=epoch_index, steps_completed=global_step - global_step_start, average_loss=average_loss), latest_eval_loss
 
 
 def evaluate(
@@ -86,29 +98,35 @@ def run_training(
     num_epochs: int,
     max_steps: int,
     eval_interval_steps: int,
+    eval_enabled: bool,
 ) -> dict[str, float | int]:
     """Execute a full training run from prepared components."""
     global_step = 0
     train_loss = float("nan")
-    eval_loss = evaluate(model=model, dataloader=eval_loader, global_step=global_step, epoch_index=0)
+    eval_loss = float("nan")
 
     for epoch_idx in range(1, num_epochs + 1):
-        epoch_result = train_epoch(
+        epoch_result, interval_eval_loss = train_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             max_steps=max_steps,
             global_step_start=global_step,
             epoch_index=epoch_idx,
+            eval_loader=eval_loader,
+            eval_interval_steps=eval_interval_steps,
+            eval_enabled=eval_enabled,
         )
         global_step += epoch_result.steps_completed
         train_loss = epoch_result.average_loss
-
-        if global_step % eval_interval_steps == 0 or global_step >= max_steps:
-            eval_loss = evaluate(model=model, dataloader=eval_loader, global_step=global_step, epoch_index=epoch_idx)
+        if interval_eval_loss is not None:
+            eval_loss = interval_eval_loss
 
         if global_step >= max_steps:
             break
+
+    if eval_enabled:
+        eval_loss = evaluate(model=model, dataloader=eval_loader, global_step=global_step, epoch_index=num_epochs)
 
     return {
         "global_steps": global_step,
