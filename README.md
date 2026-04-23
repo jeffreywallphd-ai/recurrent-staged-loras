@@ -27,17 +27,34 @@ The latent refiner path is configurable for:
 
 ## Current status
 
-This version now provides a minimal trainable baseline core:
+This version provides a minimal reproducible experiment harness:
 - baseline definitions and config semantics,
-- model composition with torch modules and trainability smoke path,
-- config parsing and baseline selection,
-- minimal end-to-end training loop with synthetic dataset, batching, optimizer, eval, and checkpoints,
-- run metadata/config/metrics artifacts and lightweight tests.
+- model composition with torch modules and trainability checks,
+- reusable training engine + loop primitives,
+- dataset abstraction with deterministic local modes (`synthetic_integer_sequences`, `text_style_patterns`),
+- deterministic run artifacts (`config.json`, `metadata.json`, `metrics.json`, `checkpoint.pt`).
 
-Still deferred:
-- full optimizer/scheduler sophistication beyond minimal AdamW loop,
-- production-grade external LoRA backend integration,
-- full benchmark reporting.
+Latent cache behavior is explicitly disabled for now and reserved as future work.
+
+## Running experiments
+
+Run a config with:
+
+```bash
+python -m training.train --config experiments/configs/standard_lora.json --run-name smoke_standard_lora
+```
+
+Output structure is standardized as:
+
+```text
+outputs/<baseline>/<run_name>/
+  config.json
+  metadata.json
+  metrics.json
+  checkpoint.pt
+```
+
+`metrics.json` includes `train_loss`, `eval_loss`, and step/epoch counts for quick run validation.
 
 ## Reading order
 
@@ -45,9 +62,3 @@ Still deferred:
 2. `docs/architecture.md`
 3. `docs/baselines.md`
 4. `docs/experiments.md`
-
-## Quick start
-
-```bash
-python -m training.train --config experiments/configs/base.json --run-name smoke_base
-```

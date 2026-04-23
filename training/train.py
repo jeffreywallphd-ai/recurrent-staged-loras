@@ -1,4 +1,4 @@
-"""Training entrypoint for minimal end-to-end baseline runs."""
+"""CLI entrypoint for baseline training runs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 
 from .baseline_selector import select_baseline
 from .config_loader import load_runtime_config
-from .loop import run_training
+from .engine import build_training_components, run_training_loop
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,7 +20,8 @@ def main() -> None:
     args = parse_args()
     runtime = load_runtime_config(args.config)
     baseline = select_baseline(runtime.raw)
-    result = run_training(runtime, run_name=args.run_name)
+    components = build_training_components(runtime)
+    result = run_training_loop(components=components, run_name=args.run_name)
 
     print(
         "[ok] "

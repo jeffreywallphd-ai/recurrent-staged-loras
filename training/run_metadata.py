@@ -20,10 +20,9 @@ class RunMetadata:
     git_commit: str = "unknown"
     created_at_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-    def write(self) -> Path:
-        """Persist run metadata to output_dir/run_metadata.json."""
-        out_dir = Path(self.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "run_metadata.json"
+    def write(self, path: str | Path | None = None) -> Path:
+        """Persist run metadata to disk."""
+        out_path = Path(path) if path is not None else Path(self.output_dir) / "metadata.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
         return out_path

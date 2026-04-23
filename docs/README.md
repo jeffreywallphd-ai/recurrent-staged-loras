@@ -21,7 +21,7 @@ This version focuses on a minimal trainable baseline implementation:
 - configuration templates and typed parsing,
 - lightweight forward/loss/backward smoke tests and reproducibility metadata.
 
-It now includes a minimal local training/data/checkpoint pipeline for controlled baseline runs, while still deferring production training infrastructure and production LoRA backend integration.
+It now includes a minimal local training/data/checkpoint pipeline for controlled baseline runs, standardized run artifacts (`config.json`, `metadata.json`, `metrics.json`, `checkpoint.pt`), and a small dataset abstraction with synthetic and text-style local modes; it still defers production training infrastructure and production LoRA backend integration.
 
 ## Reading order
 
