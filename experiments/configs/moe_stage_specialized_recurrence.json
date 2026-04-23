@@ -1,8 +1,8 @@
 {
-  "baseline": "latent_refiner_only",
+  "baseline": "stage_specialized_recurrence",
   "model": {
-    "name": "Qwen/Qwen3-8B",
-    "tokenizer_name": "Qwen/Qwen3-8B",
+    "name": "allenai/OLMoE-1B-7B-0125-Instruct",
+    "tokenizer_name": "allenai/OLMoE-1B-7B-0125-Instruct",
     "trust_remote_code": true,
     "dtype": "bfloat16",
     "device_map": "auto",
@@ -11,7 +11,7 @@
     "bnb_4bit_compute_dtype": "bfloat16",
     "attn_implementation": "sdpa",
     "gradient_checkpointing": true,
-    "architecture_type": "dense",
+    "architecture_type": "moe",
     "frozen_base": true,
     "standard_lora": {
       "enabled": false,
@@ -31,8 +31,17 @@
     "latent_refiner": {
       "enabled": true,
       "num_recurrent_steps": 3,
-      "recurrence_mode": "latent_only",
-      "adapter_sharing": "none"
+      "recurrence_mode": "stage_specialized",
+      "adapter_sharing": "per_step",
+      "adapter": {
+        "enabled": true,
+        "rank": 8,
+        "alpha": 16,
+        "dropout": 0.0,
+        "target_modules": [
+          "refiner_proj"
+        ]
+      }
     }
   },
   "dataset": {
@@ -58,6 +67,6 @@
     "deterministic": false
   },
   "output": {
-    "dir": "outputs/latent_refiner_only"
+    "dir": "outputs/stage_specialized_recurrence"
   }
 }

@@ -1,7 +1,4 @@
-"""Reusable training orchestration helpers.
-
-The CLI entrypoint should parse arguments and call these functions.
-"""
+"""Reusable training orchestration helpers."""
 
 from __future__ import annotations
 
@@ -52,9 +49,6 @@ def _set_seed(seed: int, deterministic: bool) -> None:
         torch.cuda.manual_seed_all(seed)
     if deterministic:
         torch.use_deterministic_algorithms(True, warn_only=True)
-        if torch.backends.cudnn.is_available():
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
 
 
 def _count_trainable_params(model: torch.nn.Module) -> int:
@@ -67,63 +61,37 @@ def _count_total_params(model: torch.nn.Module) -> int:
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     _set_seed(runtime.training.seed, runtime.training.deterministic)
-
     model = build_model_from_variant(runtime.variant)
     model.train()
 
+    tokenizer = None
+    if runtime.dataset["name"] == "metamath_qa":
+        from transformers import AutoTokenizer  # type: ignore
+
+        tok_name = runtime.variant.base.tokenizer_name or runtime.variant.base.model_name
+        tokenizer = AutoTokenizer.from_pretrained(tok_name, trust_remote_code=runtime.variant.base.trust_remote_code)
+
     dataset_settings = dict(runtime.dataset.get("settings", {}))
     dataset_settings["seed"] = runtime.training.seed
+    dataset_settings["max_seq_length"] = runtime.variant.base.max_seq_length
+
     bundle = build_train_eval_datasets(
         name=runtime.dataset["name"],
         settings=dataset_settings,
         vocab_size=model.base_model.vocab_size,
+        tokenizer=tokenizer,
     )
 
-    train_loader = DataLoader(
-        bundle.train,
-        batch_size=runtime.training.batch_size,
-        shuffle=False,
-        collate_fn=collate_token_sequences,
-    )
-    eval_loader = DataLoader(
-        bundle.eval,
-        batch_size=runtime.training.batch_size,
-        shuffle=False,
-        collate_fn=collate_token_sequences,
-    )
+    train_loader = DataLoader(bundle.train, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_token_sequences)
+    eval_loader = DataLoader(bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_token_sequences)
 
     trainable_params = _count_trainable_params(model)
-    trainable_tensors = [param for param in model.parameters() if param.requires_grad]
-    if trainable_params > 0 and not trainable_tensors:
-        raise RuntimeError("Expected trainable tensors when trainable_params > 0")
-
+    trainable_tensors = [p for p in model.parameters() if p.requires_grad]
     optimizer = None
     if trainable_tensors:
-        optimizer = torch.optim.AdamW(
-            trainable_tensors,
-            lr=runtime.training.learning_rate,
-            weight_decay=runtime.training.weight_decay,
-        )
+        optimizer = torch.optim.AdamW(trainable_tensors, lr=runtime.training.learning_rate, weight_decay=runtime.training.weight_decay)
 
-    return TrainingComponents(
-        runtime=runtime,
-        model=model,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        optimizer=optimizer,
-        trainable_params=trainable_params,
-    )
-
-
-def run_evaluation(*, components: TrainingComponents, global_step: int, epoch_index: int = 0) -> object:
-    from training.loop import evaluate
-
-    return evaluate(
-        model=components.model,
-        dataloader=components.eval_loader,
-        global_step=global_step,
-        epoch_index=epoch_index,
-    )
+    return TrainingComponents(runtime=runtime, model=model, train_loader=train_loader, eval_loader=eval_loader, optimizer=optimizer, trainable_params=trainable_params)
 
 
 def run_training_loop(*, components: TrainingComponents, run_name: str, config_name: str = "unknown") -> TrainResult:
@@ -138,11 +106,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         model_name=runtime.variant.base.model_name,
         output_dir=str(out_dir),
     )
-    metadata_path = out_dir / "metadata.json"
-    metadata.write(path=metadata_path)
-
-    config_path = out_dir / "config.json"
-    config_path.write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
+    metadata.write(path=out_dir / "metadata.json")
+    (out_dir / "config.json").write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
 
     training_summary = run_training(
         model=components.model,
@@ -156,70 +121,49 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     )
 
     checkpoint_path = out_dir / "checkpoint.pt"
-    torch.save(
-        {
-            "step": int(training_summary["global_steps"]),
-            "model_state_dict": components.model.state_dict(),
-            "optimizer_state_dict": components.optimizer.state_dict() if components.optimizer is not None else None,
-        },
-        checkpoint_path,
-    )
+    torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
 
     total_params = _count_total_params(components.model)
-    trainable_param_fraction = (
-        float(components.trainable_params / total_params) if total_params > 0 else 0.0
-    )
-    dataset_settings = dict(components.runtime.dataset.get("settings", {}))
+    recurrence_steps = int(runtime.variant.refiner.num_steps if runtime.variant.refiner.enabled else 1)
     metrics = {
         "run_name": run_name,
         "config_name": config_name,
         "baseline_name": runtime.baseline,
         "dataset_name": runtime.dataset["name"],
-        "dataset_mode": dataset_settings.get("mode"),
         "dataset_train_examples": len(components.train_loader.dataset),
         "dataset_eval_examples": len(components.eval_loader.dataset),
-        "batch_size": runtime.training.batch_size,
-        "learning_rate": runtime.training.learning_rate,
-        "weight_decay": runtime.training.weight_decay,
         "seed": runtime.training.seed,
-        "deterministic": runtime.training.deterministic,
         "final_train_loss": float(training_summary["train_loss"]),
         "final_eval_loss": float(training_summary["eval_loss"]),
         "best_eval_loss": float(training_summary["best_eval_loss"]),
-        "train_loss": float(training_summary["train_loss"]),
-        "eval_loss": float(training_summary["eval_loss"]),
-        "global_steps_completed": int(training_summary["global_steps"]),
-        "epochs_completed": int(training_summary["epochs_completed"]),
-        "num_steps": int(training_summary["global_steps"]),
-        "num_epochs": int(training_summary["epochs_completed"]),
+        "eval_perplexity": float(training_summary["eval_perplexity"]),
+        "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
+        "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
+        "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
         "tokens_seen_train": int(training_summary["tokens_seen_train"]),
         "tokens_seen_eval": int(training_summary["tokens_seen_eval"]),
         "tokens_per_second_train": float(training_summary["tokens_per_second_train"]),
         "tokens_per_second_eval": float(training_summary["tokens_per_second_eval"]),
-        "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
-        "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
-        "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
-        "seconds_per_step": float(training_summary["seconds_per_step"]),
         "steps_per_second": float(training_summary["steps_per_second"]),
-        "eval_perplexity": float(training_summary["eval_perplexity"]),
-        "train_perplexity": float(training_summary["train_perplexity"]),
+        "seconds_per_step": float(training_summary["seconds_per_step"]),
+        "trainable_params": int(components.trainable_params),
+        "total_params": int(total_params),
+        "trainable_param_fraction": float(components.trainable_params / total_params) if total_params > 0 else 0.0,
+        "architecture_type": runtime.variant.base.architecture_type,
+        "model_name": runtime.variant.base.model_name,
+        "recurrence_steps": recurrence_steps,
+        "effective_forward_passes_per_example": recurrence_steps,
+        "global_steps_completed": int(training_summary["global_steps"]),
+        "epochs_completed": int(training_summary["epochs_completed"]),
         "backend": components.model.base_model.backend,
-        "trainable_params": components.trainable_params,
-        "total_params": total_params,
-        "trainable_param_fraction": trainable_param_fraction,
         "latent_cache": LATENT_CACHE_STATUS,
+        "final_answer_accuracy": training_summary.get("final_answer_accuracy"),
+        "final_answer_exact_match": training_summary.get("final_answer_exact_match"),
+        "stage_3_token_accuracy": training_summary.get("stage_3_token_accuracy"),
+        "stage_2_token_accuracy": training_summary.get("stage_2_token_accuracy"),
+        "normalized_numeric_answer_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
     }
-    if "eval_next_token_accuracy" in training_summary:
-        metrics["eval_next_token_accuracy"] = float(training_summary["eval_next_token_accuracy"])
-    if "eval_top_5_accuracy" in training_summary:
-        metrics["eval_top_5_accuracy"] = float(training_summary["eval_top_5_accuracy"])
-    if "eval_target_token_accuracy" in training_summary:
-        metrics["eval_target_token_accuracy"] = float(training_summary["eval_target_token_accuracy"])
-    if "eval_target_sequence_exact_match" in training_summary:
-        metrics["eval_target_sequence_exact_match"] = float(training_summary["eval_target_sequence_exact_match"])
-
-    metrics_path = out_dir / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     return TrainResult(
         final_train_loss=metrics["final_train_loss"],
