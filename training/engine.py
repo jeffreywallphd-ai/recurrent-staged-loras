@@ -72,6 +72,18 @@ REQUIRED_STUDY_METRICS = [
     "stage_3_token_accuracy",
 ]
 
+EXTERNAL_DATASET_IDENTITY_FIELDS = [
+    "dataset_name",
+    "dataset_type",
+    "dataset_split",
+    "dataset_seed",
+    "dataset_subset_size",
+    "dataset_eval_fraction",
+    "dataset_fingerprint",
+    "train_sample_ids_hash",
+    "eval_sample_ids_hash",
+]
+
 
 def _require_metric(summary: dict[str, Any], key: str) -> Any:
     if key not in summary or summary[key] is None:
@@ -92,6 +104,16 @@ def _to_metrics_payload(eval_result: Any) -> dict[str, Any]:
         "answer_eval_string_count": int(eval_result.answer_eval_string_count),
         "answer_eval_numeric_count": int(eval_result.answer_eval_numeric_count),
     }
+
+
+def _extract_external_identity(summary: dict[str, Any], *, external_name: str) -> dict[str, Any]:
+    missing_fields = [field for field in EXTERNAL_DATASET_IDENTITY_FIELDS if summary.get(field) in (None, "")]
+    if missing_fields:
+        raise ValueError(
+            f"External dataset '{external_name}' preprocessing summary missing required identity fields: "
+            + ", ".join(missing_fields)
+        )
+    return {field: summary.get(field) for field in EXTERNAL_DATASET_IDENTITY_FIELDS}
 
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
@@ -327,9 +349,18 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         raise ValueError("Dataset preprocessing summary missing required identity fields: " + ", ".join(missing_dataset_fields))
 
     external_eval_metrics: dict[str, dict[str, Any]] = {}
+    external_preproc = components.preprocessing_summary.get("external_evaluations", {})
+    if external_preproc not in ({}, None) and not isinstance(external_preproc, dict):
+        raise ValueError("Preprocessing summary external_evaluations must be a mapping when present")
     for ds_name, ds_loader in components.external_eval_loaders.items():
         ds_result = evaluate(model=components.model, dataloader=ds_loader, tokenizer=components.tokenizer)
-        external_eval_metrics[ds_name] = _to_metrics_payload(ds_result)
+        ds_summary = external_preproc.get(ds_name, {}) if isinstance(external_preproc, dict) else {}
+        if not isinstance(ds_summary, dict):
+            raise ValueError(f"External preprocessing summary for dataset '{ds_name}' must be a mapping")
+        external_eval_metrics[ds_name] = {
+            **_extract_external_identity(ds_summary, external_name=ds_name),
+            **_to_metrics_payload(ds_result),
+        }
     if external_eval_metrics:
         metrics["external_eval"] = external_eval_metrics
 

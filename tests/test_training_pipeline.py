@@ -672,6 +672,76 @@ def test_tokenizer_initialized_when_external_eval_requires_it(tmp_path: Path, mo
     assert components.tokenizer is not None
 
 
+def test_external_eval_metrics_include_external_dataset_identity(tmp_path: Path, monkeypatch) -> None:
+    class _FakeTokenizer:
+        pad_token_id = 0
+        eos_token_id = 0
+        pad_token = "<pad>"
+
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *_args, **_kwargs: _FakeTokenizer())
+
+    def _fake_external_dataset(*, name, settings, tokenizer):
+        assert name == "gsm8k"
+        assert tokenizer is not None
+        from data.dataset import DatasetBundle, SequenceDataset
+
+        ex = {
+            "input_ids": torch.tensor([1, 2], dtype=torch.long),
+            "labels": torch.tensor([1, 2], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "final_answer_mask": torch.tensor([0, 1], dtype=torch.bool),
+            "answer_text": "2",
+            "answer_text_normalized": "2",
+            "source_signature": "x",
+        }
+        return DatasetBundle(
+            train=SequenceDataset([ex]),
+            eval=SequenceDataset([ex]),
+            preprocessing_summary={
+                "dataset_name": "gsm8k",
+                "dataset_type": "external",
+                "dataset_split": str(settings.get("split", "test")),
+                "dataset_seed": int(settings.get("seed", 0)),
+                "dataset_subset_size": int(settings.get("subset_size", 1)),
+                "dataset_eval_fraction": 0.0,
+                "dataset_fingerprint": "external-fp-gsm8k",
+                "train_sample_ids_hash": "external-train-gsm8k",
+                "eval_sample_ids_hash": "external-eval-gsm8k",
+            },
+        )
+
+    monkeypatch.setattr("training.engine.build_external_eval_dataset", _fake_external_dataset)
+    runtime = load_runtime_config_from_raw(
+        {
+            "baseline": "base",
+            "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+            "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 8, "sequence_length": 6}, "external_evaluations": [{"name": "gsm8k", "subset_size": 1, "split": "test"}]},
+            "training": {"batch_size": 1, "num_epochs": 1, "max_steps": 1},
+            "output": {"dir": str(tmp_path)},
+        }
+    )
+    result = run_training_loop(components=build_training_components(runtime), run_name="ext", config_name="unit")
+    metrics = json.loads((result.output_dir / "metrics.json").read_text())
+    payload = metrics["external_eval"]["gsm8k"]
+    for key in [
+        "dataset_name",
+        "dataset_type",
+        "dataset_split",
+        "dataset_seed",
+        "dataset_subset_size",
+        "dataset_eval_fraction",
+        "dataset_fingerprint",
+        "train_sample_ids_hash",
+        "eval_sample_ids_hash",
+    ]:
+        assert key in payload
+    assert payload["dataset_type"] == "external"
+    assert payload["dataset_name"] == "gsm8k"
+
+
 def test_engine_fails_when_required_metric_missing(tmp_path: Path, monkeypatch) -> None:
     rt = _runtime(tmp_path, baseline="base")
     components = build_training_components(rt)
