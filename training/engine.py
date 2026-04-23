@@ -64,6 +64,21 @@ def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
 
 
+REQUIRED_STUDY_METRICS = [
+    "final_answer_accuracy",
+    "final_answer_exact_match",
+    "normalized_numeric_answer_accuracy",
+    "stage_2_token_accuracy",
+    "stage_3_token_accuracy",
+]
+
+
+def _require_metric(summary: dict[str, Any], key: str) -> Any:
+    if key not in summary or summary[key] is None:
+        raise ValueError(f"Training summary missing required study metric '{key}'")
+    return summary[key]
+
+
 def _to_metrics_payload(eval_result: Any) -> dict[str, Any]:
     return {
         "eval_loss": float(eval_result.loss),
@@ -202,6 +217,13 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
 
     total_params = _count_total_params(components.model)
+    required_metric_values = {name: _require_metric(training_summary, name) for name in REQUIRED_STUDY_METRICS}
+    dataset_summary = dict(components.preprocessing_summary)
+    global_steps_completed = int(training_summary["global_steps"])
+    effective_optimizer_steps = global_steps_completed
+    tokens_seen_train = int(training_summary["tokens_seen_train"])
+    tokens_per_optimizer_step = (float(tokens_seen_train) / float(effective_optimizer_steps)) if effective_optimizer_steps > 0 else 0.0
+
     metrics = {
         "run_name": run_name,
         "config_name": config_name,
@@ -211,6 +233,14 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "dataset_name": runtime.dataset["name"],
         "dataset_train_examples": len(components.train_loader.dataset),
         "dataset_eval_examples": len(components.eval_loader.dataset),
+        "dataset_type": str(dataset_summary.get("dataset_type", "primary")),
+        "dataset_split": dataset_summary.get("dataset_split"),
+        "dataset_seed": dataset_summary.get("dataset_seed"),
+        "dataset_subset_size": dataset_summary.get("dataset_subset_size"),
+        "dataset_eval_fraction": dataset_summary.get("dataset_eval_fraction"),
+        "dataset_fingerprint": dataset_summary.get("dataset_fingerprint"),
+        "train_sample_ids_hash": dataset_summary.get("train_sample_ids_hash"),
+        "eval_sample_ids_hash": dataset_summary.get("eval_sample_ids_hash"),
         "seed": runtime.training.seed,
         "final_train_loss": float(training_summary["train_loss"]),
         "final_eval_loss": float(training_summary["eval_loss"]),
@@ -220,7 +250,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
         "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
         "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
-        "tokens_seen_train": int(training_summary["tokens_seen_train"]),
+        "tokens_seen_train": tokens_seen_train,
         "tokens_seen_eval": int(training_summary["tokens_seen_eval"]),
         "tokens_per_second_train": float(training_summary["tokens_per_second_train"]),
         "tokens_per_second_eval": float(training_summary["tokens_per_second_eval"]),
@@ -236,19 +266,21 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "compute_control_enabled": bool(compute.enabled),
         "compute_control_mode": compute.mode,
         "adjusted_max_steps": int(adjusted_max_steps),
-        "global_steps_completed": int(training_summary["global_steps"]),
+        "effective_optimizer_steps": effective_optimizer_steps,
+        "tokens_per_optimizer_step": tokens_per_optimizer_step,
+        "global_steps_completed": global_steps_completed,
         "epochs_completed": int(training_summary["epochs_completed"]),
         "backend": components.model.base_model.backend,
         "latent_cache": LATENT_CACHE_STATUS,
-        "final_answer_accuracy": training_summary.get("final_answer_accuracy"),
-        "final_answer_exact_match": training_summary.get("final_answer_exact_match"),
+        "final_answer_accuracy": required_metric_values["final_answer_accuracy"],
+        "final_answer_exact_match": required_metric_values["final_answer_exact_match"],
         "final_answer_normalized_match": training_summary.get("final_answer_normalized_match"),
         "answer_span_normalized_accuracy": training_summary.get("final_answer_accuracy"),
         "answer_span_exact_match": training_summary.get("final_answer_exact_match"),
         "answer_span_normalized_match": training_summary.get("final_answer_normalized_match"),
-        "stage_3_token_accuracy": training_summary.get("stage_3_token_accuracy"),
-        "stage_2_token_accuracy": training_summary.get("stage_2_token_accuracy"),
-        "normalized_numeric_answer_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
+        "stage_3_token_accuracy": required_metric_values["stage_3_token_accuracy"],
+        "stage_2_token_accuracy": required_metric_values["stage_2_token_accuracy"],
+        "normalized_numeric_answer_accuracy": required_metric_values["normalized_numeric_answer_accuracy"],
         "symbolic_answer_accuracy": training_summary.get("symbolic_answer_accuracy"),
         "answer_span_numeric_accuracy": training_summary.get("normalized_numeric_answer_accuracy"),
         "answer_eval_string_count": int(training_summary.get("answer_eval_string_count", 0)),
@@ -280,6 +312,19 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "ablation_recurrent_steps": runtime.raw.get("ablation", {}).get("recurrent_steps") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
         "ablation_lora_rank": runtime.raw.get("ablation", {}).get("lora_rank") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
     }
+
+    required_dataset_identity_fields = [
+        "dataset_fingerprint",
+        "train_sample_ids_hash",
+        "eval_sample_ids_hash",
+        "dataset_split",
+        "dataset_seed",
+        "dataset_subset_size",
+        "dataset_eval_fraction",
+    ]
+    missing_dataset_fields = [f for f in required_dataset_identity_fields if metrics.get(f) in (None, "")]
+    if missing_dataset_fields:
+        raise ValueError("Dataset preprocessing summary missing required identity fields: " + ", ".join(missing_dataset_fields))
 
     external_eval_metrics: dict[str, dict[str, Any]] = {}
     for ds_name, ds_loader in components.external_eval_loaders.items():

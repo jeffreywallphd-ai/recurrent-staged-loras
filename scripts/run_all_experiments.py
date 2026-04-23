@@ -15,6 +15,26 @@ from training.engine import build_training_components, run_training_loop
 from training.metrics_schema import AGG_GROUP_BY_FIELDS, AGGREGATE_METRICS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 
 
+
+
+AGGREGATION_CONTROL_FIELDS = [
+    "baseline_name",
+    "architecture_type",
+    "model_name",
+    "dataset_name",
+    "config_name",
+    "compute_control_enabled",
+    "compute_control_mode",
+    "recurrence_steps",
+    "ablation_recurrent_steps",
+    "ablation_lora_rank",
+    "run_scope",
+]
+
+
+def _normalize_group_value(value: object) -> object:
+    return None if value == "" else value
+
 SUMMARY_FIELDS = [
     "row_type",
     *RUN_METRICS_FIELDS,
@@ -61,6 +81,10 @@ def _agg(rows: list[dict[str, object]]) -> dict[str, object]:
     out: dict[str, object] = {}
     for k in AGG_GROUP_BY_FIELDS:
         out[k] = rows[0].get(k)
+    for field in AGGREGATION_CONTROL_FIELDS:
+        values = {_normalize_group_value(r.get(field)) for r in rows}
+        if len(values) != 1:
+            raise ValueError(f"Invalid aggregate group: heterogeneous '{field}' values detected: {sorted(values, key=str)}")
     out["num_runs"] = len(rows)
     stats: dict[str, dict[str, float]] = {}
     for metric in AGGREGATE_METRICS:
@@ -176,6 +200,7 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "baseline_name": run.get("baseline_name"),
             "baseline_family": run.get("baseline_family") or run.get("baseline_name"),
             "dataset_name": run.get("dataset_name"),
+            "dataset_type": run.get("dataset_type", "primary"),
             "dataset": "primary",
             "run_scope": run.get("run_scope"),
             "seed": run.get("seed"),
@@ -183,6 +208,8 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "model_name": run.get("model_name"),
             "compute_control_enabled": run.get("compute_control_enabled"),
             "compute_control_mode": run.get("compute_control_mode"),
+            "effective_optimizer_steps": run.get("effective_optimizer_steps"),
+            "tokens_per_optimizer_step": run.get("tokens_per_optimizer_step"),
             "ablation_recurrent_steps": run.get("ablation_recurrent_steps"),
             "ablation_lora_rank": run.get("ablation_lora_rank"),
             "final_eval_loss": run.get("final_eval_loss"),
@@ -206,7 +233,8 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
                 "config_name": run.get("config_name"),
                 "baseline_name": run.get("baseline_name"),
                 "baseline_family": run.get("baseline_family") or run.get("baseline_name"),
-                "dataset_name": run.get("dataset_name"),
+                "dataset_name": external_name,
+                "dataset_type": "external",
                 "dataset": external_name,
                 "run_scope": run.get("run_scope"),
                 "seed": run.get("seed"),
@@ -214,6 +242,8 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
                 "model_name": run.get("model_name"),
                 "compute_control_enabled": run.get("compute_control_enabled"),
                 "compute_control_mode": run.get("compute_control_mode"),
+                "effective_optimizer_steps": run.get("effective_optimizer_steps"),
+                "tokens_per_optimizer_step": run.get("tokens_per_optimizer_step"),
                 "ablation_recurrent_steps": run.get("ablation_recurrent_steps"),
                 "ablation_lora_rank": run.get("ablation_lora_rank"),
                 "final_eval_loss": payload.get("eval_loss"),
@@ -233,10 +263,17 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "baseline_name": agg.get("baseline_name"),
             "baseline_family": agg.get("baseline_family") or agg.get("baseline_name"),
             "dataset_name": agg.get("dataset_name"),
+            "dataset_type": agg.get("dataset_type", "primary"),
             "dataset": "primary",
             "run_scope": agg.get("run_scope"),
             "architecture_type": agg.get("architecture_type"),
             "model_name": agg.get("model_name"),
+            "compute_control_enabled": agg.get("compute_control_enabled"),
+            "compute_control_mode": agg.get("compute_control_mode"),
+            "effective_optimizer_steps": None,
+            "tokens_per_optimizer_step": None,
+            "ablation_recurrent_steps": agg.get("ablation_recurrent_steps"),
+            "ablation_lora_rank": agg.get("ablation_lora_rank"),
             "num_runs": agg.get("num_runs"),
             "final_eval_loss": dict(metrics.get("final_eval_loss", {})).get("mean"),
             "final_eval_loss_std": dict(metrics.get("final_eval_loss", {})).get("std"),
@@ -291,6 +328,7 @@ def main() -> None:
                     config_name=derived_name,
                 )
                 metrics = json.loads((result.output_dir / "metrics.json").read_text(encoding="utf-8"))
+                metrics.setdefault("dataset_type", "primary")
                 runs.append(metrics)
                 print(f"[ok] {run_name}")
 

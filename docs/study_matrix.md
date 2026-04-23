@@ -48,6 +48,10 @@ Primary multi-seed report runs use: `11`, `22`, `33`.
 - `compute_control_enabled`
 - `compute_control_mode`
 - `adjusted_max_steps`
+- `effective_optimizer_steps`
+- `tokens_per_optimizer_step`
+
+Interpretation note: `effective_forward_passes_per_example` equalizes forward-pass budget, not full optimization dynamics. Token and wall-time compute-control modes apply different stop criteria.
 
 ## External evaluations (optional, non-confirmatory by default)
 
@@ -57,6 +61,7 @@ Supported config-driven external datasets:
 - `svamp`
 
 External scores are reported separately under `external_eval.<dataset>` and in `report_table.csv` rows with `report_tier=external_eval`.
+External rows are labeled `dataset_type=external` and excluded from primary aggregates and confirmatory inference by default.
 
 ## Ablations (optional, separated from confirmatory matrix)
 
@@ -88,6 +93,7 @@ Do not mix ablation-derived runs with confirmatory study reporting by default.
 - `all`: includes both confirmatory and ablation runs.
 
 Artifacts store `run_scope` per run (`confirmatory` or `ablation`) so downstream filters can prevent accidental mixing.
+Confirmatory analysis fails fast on ablation rows by default unless `--allow-ablations-in-analysis` is provided.
 
 ## Baseline naming rules
 
@@ -114,3 +120,14 @@ Confirmatory inference is limited to the primary outcomes (`final_answer_accurac
 Confirmatory comparison validity requires matched `architecture_type`, `model_name`, and `dataset_name`; compared baselines can come from different config files and are audited with `config_name_a` / `config_name_b` in analysis outputs.
 
 External evaluation datasets are descriptive by default. They are included in analysis only in explicit external-analysis mode (`--dataset-scope external` or `--dataset-scope all`), and confirmatory inference remains primary-dataset-only unless intentionally changed.
+Pilot rows (`*_pilot.json`) are also rejected by confirmatory analysis by default unless `--allow-pilot-runs-in-analysis` is explicitly provided.
+
+## Dataset reproducibility identity (required)
+
+Every run writes stable dataset identity fields for pairing auditability:
+- `dataset_fingerprint`
+- `train_sample_ids_hash`
+- `eval_sample_ids_hash`
+- `dataset_name`, `dataset_split`, `dataset_seed`, `dataset_subset_size`, `dataset_eval_fraction`
+
+Paired confirmatory comparisons require matching `dataset_fingerprint` and `eval_sample_ids_hash` per paired seed; mismatches fail loudly as non-comparable runs.

@@ -44,7 +44,13 @@ def _make_run(
         "run_name": f"{arch}_{baseline}_{seed}",
         "config_name": config_name or f"{arch}_study.json",
         "baseline_name": baseline,
+        "baseline_family": baseline,
+        "run_scope": "confirmatory",
         "dataset_name": dataset_name,
+        "dataset_type": "primary",
+        "dataset_fingerprint": f"fp-{dataset_name}-{seed}",
+        "train_sample_ids_hash": f"train-{dataset_name}-{seed}",
+        "eval_sample_ids_hash": f"eval-{dataset_name}-{seed}",
         "seed": seed,
         "architecture_type": arch,
         "model_name": model_name or ("Qwen/Qwen3-8B" if arch == "dense" else "allenai/OLMoE-1B-7B-0125-Instruct"),
@@ -211,6 +217,7 @@ def test_statistical_filters_support_compute_control_and_ablation(tmp_path: Path
         allow_unpaired=False,
         compute_controlled_only=True,
         ablation_only=False,
+        allow_ablations_in_analysis=True,
     )
     assert result["confirmatory_rows"] > 0
 
@@ -257,3 +264,39 @@ def test_dataset_scope_all_keeps_primary_confirmatory(tmp_path: Path) -> None:
     confirmatory = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
     assert confirmatory
     assert all(row["dataset_name"] == "metamath_qa" for row in confirmatory)
+
+
+def test_paired_dataset_fingerprint_mismatch_fails(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        if row["architecture_type"] == "dense" and row["baseline_name"] == "standard_lora" and row["seed"] == 11:
+            row["dataset_fingerprint"] = "different-fingerprint"
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="dataset identity mismatch"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_confirmatory_rejects_ablations_by_default(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    runs[0]["ablation_recurrent_steps"] = 2
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="ablation-derived runs"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_confirmatory_rejects_pilot_by_default(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    runs[0]["config_name"] = "dense_standard_lora_pilot.json"
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="pilot runs"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_confirmatory_missing_metric_in_pair_fails(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    for row in runs:
+        if row["architecture_type"] == "dense" and row["baseline_name"] == "standard_lora" and row["seed"] == 22:
+            row["final_answer_accuracy"] = None
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="partial metric missingness"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)

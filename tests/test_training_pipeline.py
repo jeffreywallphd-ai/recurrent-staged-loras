@@ -87,6 +87,11 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
         "effective_forward_passes_per_example",
         "train_perplexity",
         "answer_eval_string_count",
+        "dataset_fingerprint",
+        "train_sample_ids_hash",
+        "eval_sample_ids_hash",
+        "effective_optimizer_steps",
+        "tokens_per_optimizer_step",
     ]:
         assert key in metrics
     diagnostics_path = result.output_dir / "answer_eval_diagnostics.json"
@@ -398,6 +403,17 @@ def test_compute_control_effective_forward_passes_adjusts_steps(tmp_path: Path) 
     assert metrics["compute_control_enabled"] is True
     assert metrics["compute_control_mode"] == "effective_forward_passes"
     assert metrics["adjusted_max_steps"] == 4
+    assert metrics["effective_optimizer_steps"] == metrics["global_steps_completed"]
+    assert metrics["tokens_per_optimizer_step"] > 0
+
+
+def test_dataset_fingerprint_stable_for_identical_settings(tmp_path: Path) -> None:
+    rt1 = _runtime(tmp_path / "a")
+    rt2 = _runtime(tmp_path / "b")
+    m1 = json.loads((run_training_loop(components=build_training_components(rt1), run_name="a", config_name="unit").output_dir / "metrics.json").read_text())
+    m2 = json.loads((run_training_loop(components=build_training_components(rt2), run_name="b", config_name="unit").output_dir / "metrics.json").read_text())
+    assert m1["dataset_fingerprint"] == m2["dataset_fingerprint"]
+    assert m1["eval_sample_ids_hash"] == m2["eval_sample_ids_hash"]
 
 
 def test_ablation_config_expansion_in_run_script(tmp_path: Path) -> None:
@@ -564,6 +580,42 @@ def test_confirmatory_scope_excludes_ablation_derived_runs_in_script(tmp_path: P
     assert summary["aggregates"] == []
 
 
+def test_aggregates_do_not_mix_compute_control_modes(tmp_path: Path) -> None:
+    cfg = _tiny_config(tmp_path, name="cc_mix.json")
+    subprocess.run([sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg), "--seeds", "1", "--preset-scope", "all"], check=True)
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    run = summary["runs"][0]
+    mixed = [dict(run), dict(run)]
+    mixed[0]["compute_control_enabled"] = True
+    mixed[0]["compute_control_mode"] = "tokens"
+    mixed[1]["compute_control_enabled"] = False
+    mixed[1]["compute_control_mode"] = "effective_forward_passes"
+    from scripts.run_all_experiments import _agg
+    import pytest
+    with pytest.raises(ValueError, match="heterogeneous 'compute_control_enabled'"):
+        _agg(mixed)
+
+
+def test_aggregates_do_not_mix_run_scope_or_ablation_controls(tmp_path: Path) -> None:
+    cfg = _tiny_config(tmp_path, name="scope_mix.json")
+    subprocess.run([sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg), "--seeds", "1", "--preset-scope", "all"], check=True)
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    run = summary["runs"][0]
+    from scripts.run_all_experiments import _agg
+    import pytest
+
+    mixed_scope = [dict(run), dict(run)]
+    mixed_scope[1]["run_scope"] = "ablation"
+    with pytest.raises(ValueError, match="heterogeneous 'run_scope'"):
+        _agg(mixed_scope)
+
+    mixed_ablation = [dict(run), dict(run)]
+    mixed_ablation[0]["ablation_recurrent_steps"] = 2
+    mixed_ablation[1]["ablation_recurrent_steps"] = 3
+    with pytest.raises(ValueError, match="heterogeneous 'ablation_recurrent_steps'"):
+        _agg(mixed_ablation)
+
+
 def test_baseline_family_preserved_for_recurrence_ablations(tmp_path: Path) -> None:
     cfg_path = tmp_path / "family.json"
     cfg_path.write_text(
@@ -618,3 +670,38 @@ def test_tokenizer_initialized_when_external_eval_requires_it(tmp_path: Path, mo
     )
     components = build_training_components(runtime)
     assert components.tokenizer is not None
+
+
+def test_engine_fails_when_required_metric_missing(tmp_path: Path, monkeypatch) -> None:
+    rt = _runtime(tmp_path, baseline="base")
+    components = build_training_components(rt)
+
+    def _fake_run_training(**_kwargs):
+        return {
+            "train_loss": 1.0,
+            "eval_loss": 1.0,
+            "best_eval_loss": 1.0,
+            "eval_perplexity": 2.0,
+            "train_perplexity": 2.0,
+            "wall_time_seconds_total": 1.0,
+            "wall_time_seconds_train": 1.0,
+            "wall_time_seconds_eval": 0.0,
+            "tokens_seen_train": 10,
+            "tokens_seen_eval": 10,
+            "tokens_per_second_train": 10.0,
+            "tokens_per_second_eval": 10.0,
+            "steps_per_second": 1.0,
+            "seconds_per_step": 1.0,
+            "global_steps": 1,
+            "epochs_completed": 1,
+            "final_answer_accuracy": 1.0,
+            "final_answer_exact_match": 1.0,
+            "normalized_numeric_answer_accuracy": 1.0,
+            "stage_2_token_accuracy": 1.0,
+            # missing required stage_3_token_accuracy
+        }
+
+    monkeypatch.setattr("training.engine.run_training", _fake_run_training)
+    import pytest
+    with pytest.raises(ValueError, match="stage_3_token_accuracy"):
+        run_training_loop(components=components, run_name="missing", config_name="unit")
