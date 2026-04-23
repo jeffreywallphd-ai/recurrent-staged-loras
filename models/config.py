@@ -1,4 +1,9 @@
-"""Typed configuration objects for real-model staged adaptation experiments."""
+"""Typed configuration contracts for model variants used in the study.
+
+These dataclasses define the model-side experiment surface (base model,
+standard LoRA, recurrent latent refiner, and adapter sharing constraints).
+Validation here prevents invalid architecture/ablation combinations upstream.
+"""
 
 from __future__ import annotations
 
@@ -55,6 +60,7 @@ class VariantConfig:
     trainable_modules: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
+        """Validate cross-field invariants for recurrence + adapter settings."""
         if self.base.architecture_type not in {"dense", "moe"}:
             raise ValueError("model.architecture_type must be one of {'dense','moe'}")
         if not self.refiner.enabled:

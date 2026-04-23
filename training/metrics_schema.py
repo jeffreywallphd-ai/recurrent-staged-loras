@@ -1,4 +1,8 @@
-"""Canonical metrics schema for run-level and aggregate study outputs."""
+"""Canonical column definitions shared across run, aggregate, and report tables.
+
+These lists are used as compatibility contracts between training outputs and
+analysis/reporting scripts. Changes here are schema changes, not formatting.
+"""
 
 RUN_METRICS_FIELDS = [
     "run_name",
@@ -105,6 +109,8 @@ AGG_GROUP_BY_FIELDS = [
     "baseline_family",
     "dataset_type",
 ]
+# Aggregates are grouped by compute + ablation control dimensions to prevent
+# averaging runs from distinct experimental regimes.
 AGGREGATE_METRICS = [
     "final_eval_loss",
     "eval_perplexity",

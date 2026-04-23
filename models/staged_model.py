@@ -1,4 +1,8 @@
-"""Top-level composition for staged latent adaptation experiments."""
+"""Top-level model composition used by training/evaluation loops.
+
+Combines frozen backbone, optional recurrent latent refiner, and LM head.
+Also exposes per-step hidden-state traces needed for stage-aware supervision.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ class StagedLatentAdaptationModel(nn.Module):
         self.refiner = refiner
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> ModelForwardOutput:
+        """Run backbone -> optional refiner -> LM head for one batch."""
         base_out = self.base_model.forward_backbone(input_ids=input_ids, attention_mask=attention_mask)
         if self.refiner is None:
             refined = base_out.hidden_states

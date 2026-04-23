@@ -1,4 +1,9 @@
-"""Experiment configuration loading and model/training-build helpers."""
+"""Runtime configuration normalization and model-construction helpers.
+
+This module translates raw experiment JSON into validated typed configs and
+enforces cross-field constraints that protect study correctness (dataset
+support, compute-control modes, ablation compatibility).
+"""
 
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ EXTERNAL_EVAL_DEFAULTS: dict[str, Any] = {"split": "test", "subset_size": 0, "se
 
 
 def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Merge user-provided runtime payload with shared dataset/output defaults."""
     dataset_raw = raw.get("dataset", {})
     dataset_name = str(dataset_raw.get("name", SHARED_DATASET_DEFAULTS["name"]))
     settings = dict(SHARED_DATASET_DEFAULTS["settings"])
@@ -98,6 +104,11 @@ def load_variant_config(path: str | Path) -> VariantConfig:
 
 
 def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
+    """Parse and validate a runtime config dictionary.
+
+    Raises:
+        ValueError: On unsupported datasets/modes or invalid ablation requests.
+    """
     training_raw = raw.get("training", {})
     dataset_resolved, output_resolved = _merge_runtime_defaults(raw)
     compute_raw = dict(training_raw.get("compute_control", {}))
@@ -133,6 +144,8 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         raise ValueError(f"Unsupported dataset '{dataset_name}'. Supported primary datasets: {sorted(SUPPORTED_PRIMARY_DATASETS)}")
     dataset_resolved["name"] = dataset_name
 
+    # Normalize external eval entries so downstream code can assume complete
+    # names/splits/seeds/subset-size fields for identity accounting.
     normalized_external_evals: list[dict[str, Any]] = []
     for item in dataset_resolved.get("external_evaluations", []):
         if not isinstance(item, dict):
@@ -161,6 +174,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
     dataset_resolved["external_evaluations"] = normalized_external_evals
 
     variant = parse_variant_config(raw)
+    # Fail-fast ablation checks prevent generating silently invalid sweeps.
     ablation = raw.get("ablation", {})
     if isinstance(ablation, dict):
         if ablation.get("lora_rank") is not None and not (variant.standard_lora.enabled or variant.refiner_adapter.enabled):
@@ -183,6 +197,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
 
 
 def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationModel:
+    """Construct concrete model modules from a validated variant config."""
     base_model = FrozenBaseCausalLM(config=variant.base)
 
     if variant.standard_lora.enabled:

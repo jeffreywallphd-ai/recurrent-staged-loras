@@ -81,5 +81,9 @@
       8,
       16
     ]
-  }
+  },
+  "run_notes": [
+    "ablation-only preset (non-confirmatory by default)",
+    "sweeps recurrent steps and adapter rank for stage-specialized recurrence"
+  ]
 }

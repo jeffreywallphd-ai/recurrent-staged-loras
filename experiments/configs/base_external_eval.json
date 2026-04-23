@@ -79,5 +79,9 @@
   },
   "output": {
     "dir": "outputs/base"
-  }
+  },
+  "run_notes": [
+    "external-eval robustness preset",
+    "external metrics are descriptive by default and excluded from confirmatory inference"
+  ]
 }

@@ -1,4 +1,16 @@
-"""Reusable training orchestration helpers."""
+"""Training/evaluation orchestration for a single configured run.
+
+This module is the bridge between validated runtime config objects and the
+artifact surface consumed by downstream aggregation/statistics scripts. It owns:
+
+- assembling model + datasets + optimizer,
+- applying compute-control constraints to the training loop,
+- enforcing required metric and dataset-identity invariants,
+- writing run artifacts (`metrics.json`, `metadata.json`, diagnostics files).
+
+Scientific invariant: run-level metrics are only considered pairable for
+confirmatory analysis when dataset identity fields are present and stable.
+"""
 
 from __future__ import annotations
 
@@ -48,6 +60,7 @@ class TrainResult:
 
 
 def _set_seed(seed: int, deterministic: bool) -> None:
+    """Seed Python/Torch RNG state for reproducible sampling and initialization."""
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -86,6 +99,12 @@ EXTERNAL_DATASET_IDENTITY_FIELDS = [
 
 
 def _require_metric(summary: dict[str, Any], key: str) -> Any:
+    """Require a metric needed by the study schema.
+
+    Raises:
+        ValueError: If the metric is absent/None, because confirmatory reporting
+            requires complete primary outcomes.
+    """
     if key not in summary or summary[key] is None:
         raise ValueError(f"Training summary missing required study metric '{key}'")
     return summary[key]
@@ -107,6 +126,7 @@ def _to_metrics_payload(eval_result: Any) -> dict[str, Any]:
 
 
 def _extract_external_identity(summary: dict[str, Any], *, external_name: str) -> dict[str, Any]:
+    """Validate and extract external-dataset identity fields from preprocessing."""
     missing_fields = [field for field in EXTERNAL_DATASET_IDENTITY_FIELDS if summary.get(field) in (None, "")]
     if missing_fields:
         raise ValueError(
@@ -117,12 +137,25 @@ def _extract_external_identity(summary: dict[str, Any], *, external_name: str) -
 
 
 def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
+    """Build all runtime objects required to execute one run.
+
+    Inputs:
+        runtime: Parsed/validated runtime configuration.
+    Outputs:
+        TrainingComponents bundle with model, loaders, optimizer, summaries.
+    Side effects:
+        Initializes tokenizer/model weights and dataset objects.
+    Failure modes:
+        Raises ValueError on invalid external dataset specs or missing tokenizer.
+    """
     _set_seed(runtime.training.seed, runtime.training.deterministic)
     model = build_model_from_variant(runtime.variant)
     model.train()
 
     dataset_name = str(runtime.dataset["name"]).strip().lower()
     external_names = [str(item.get("name", "")).strip().lower() for item in runtime.dataset.get("external_evaluations", []) if isinstance(item, dict)]
+    # Tokenizer-backed datasets require text decoding for answer-span scoring and
+    # deterministic char->token span construction.
     requires_tokenizer = dataset_name in {"metamath_qa"} or any(name in {"gsm8k", "math", "svamp"} for name in external_names)
     tokenizer = None
     if requires_tokenizer:
@@ -185,6 +218,11 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
 
 
 def run_training_loop(*, components: TrainingComponents, run_name: str, config_name: str = "unknown") -> TrainResult:
+    """Execute training/evaluation and emit run-level artifacts.
+
+    This function is the canonical writer for `metrics.json`; downstream tools
+    assume field names and identity semantics defined here.
+    """
     runtime = components.runtime
     out_dir = Path(runtime.output["dir"]) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +246,9 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     max_train_tokens: int | None = None
     max_wall_time_seconds: float | None = None
     if compute.enabled:
+        # Compute-control equalizes selected budget surfaces, not optimization
+        # dynamics. In particular, effective_forward_pass control rescales
+        # optimizer-step budget but does not make training trajectories identical.
         if compute.mode == "effective_forward_passes":
             adjusted_max_steps = max(1, int(base_max_steps / max(effective_forward_passes, 1)))
         elif compute.mode == "tokens":
@@ -239,6 +280,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
 
     total_params = _count_total_params(components.model)
+    # These outcomes are required for confirmatory/report tables; fail fast when
+    # any are missing to avoid silently publishing partial rows.
     required_metric_values = {name: _require_metric(training_summary, name) for name in REQUIRED_STUDY_METRICS}
     dataset_summary = dict(components.preprocessing_summary)
     global_steps_completed = int(training_summary["global_steps"])
@@ -344,6 +387,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "dataset_subset_size",
         "dataset_eval_fraction",
     ]
+    # Dataset identity is mandatory because confirmatory pairing later enforces
+    # fingerprint/hash equality across compared seeds.
     missing_dataset_fields = [f for f in required_dataset_identity_fields if metrics.get(f) in (None, "")]
     if missing_dataset_fields:
         raise ValueError("Dataset preprocessing summary missing required identity fields: " + ", ".join(missing_dataset_fields))
@@ -357,6 +402,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         ds_summary = external_preproc.get(ds_name, {}) if isinstance(external_preproc, dict) else {}
         if not isinstance(ds_summary, dict):
             raise ValueError(f"External preprocessing summary for dataset '{ds_name}' must be a mapping")
+        # External eval is written as a self-contained descriptive payload with
+        # its own identity fields so analyses can avoid inheriting primary IDs.
         external_eval_metrics[ds_name] = {
             **_extract_external_identity(ds_summary, external_name=ds_name),
             **_to_metrics_payload(ds_result),

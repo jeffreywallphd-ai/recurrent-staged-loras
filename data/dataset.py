@@ -1,4 +1,13 @@
-"""Real dataset loading + explicit 3-stage preprocessing and collation."""
+"""Dataset builders for staged training/evaluation with reproducibility identity.
+
+Pipeline role:
+- load raw sources (MetaMathQA + optional external datasets),
+- convert rows into staged token sequences and answer spans,
+- emit deterministic identity fingerprints/hashes used for run pairing checks.
+
+Invariant: confirmatory comparisons rely on dataset fingerprints and eval-sample
+hashes generated here; changing identity logic changes statistical comparability.
+"""
 
 from __future__ import annotations
 
@@ -90,6 +99,11 @@ def _example_from_text(
     answer_text: str,
     source_signature: str,
 ) -> tuple[Example | None, bool, bool]:
+    """Tokenize one QA text and derive answer-span masks.
+
+    Returns:
+        (example_or_none, truncated_anywhere, answer_span_truncated)
+    """
     tok = tokenizer(
         text,
         truncation=True,
@@ -134,6 +148,7 @@ def build_staged_examples_from_hf(
     cache_dir: str | None,
     split: str,
 ) -> tuple[list[Example], dict[str, int]]:
+    """Build staged MetaMathQA examples with filtering diagnostics."""
     from datasets import load_dataset  # type: ignore
 
     ds = load_dataset("meta-math/MetaMathQA", split=split, cache_dir=cache_dir)
@@ -183,6 +198,8 @@ def build_staged_examples_from_hf(
         stage3_mask = _char_spans_to_token_mask(offsets, stage3_span)
         answer_mask = _char_spans_to_token_mask(offsets, answer_span)
 
+        # Enforce disjoint stage masks so token-level stage accuracies are
+        # interpretable and non-overlapping.
         stage2_mask = stage2_mask & ~stage3_mask
         stage1_mask = stage1_mask & ~stage2_mask & ~stage3_mask
         answer_mask = answer_mask & stage3_mask
@@ -248,6 +265,7 @@ def build_external_examples_from_hf(
     tokenizer: Any,
     cache_dir: str | None,
 ) -> tuple[list[Example], dict[str, int]]:
+    """Build answer-span-evaluable examples for external datasets."""
     from datasets import load_dataset  # type: ignore
 
     key = dataset_name.lower()
@@ -351,6 +369,7 @@ def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: 
 
 
 def collate_token_sequences(batch: list[Example], *, pad_token_id: int) -> dict[str, torch.Tensor | list[str]]:
+    """Pad variable-length examples and preserve stage/answer masks."""
     max_len = max(int(item["input_ids"].shape[0]) for item in batch)
     lengths = [int(item["input_ids"].shape[0]) for item in batch]
 
@@ -412,6 +431,12 @@ def _dataset_identity_payload(
     train_examples: list[Example],
     eval_examples: list[Example],
 ) -> dict[str, Any]:
+    """Build stable dataset identity fields for reproducibility and pairing.
+
+    `dataset_fingerprint` summarizes preprocessing settings plus sampled IDs.
+    Train/eval sample hashes are also broken out explicitly to allow strict
+    paired-run checks on evaluation cohorts.
+    """
     train_hash = _sample_ids_hash(train_examples)
     eval_hash = _sample_ids_hash(eval_examples)
     payload = {
@@ -437,6 +462,7 @@ def _split_counts(total_examples: int, eval_fraction: float) -> tuple[int, int]:
 
 
 def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: int, tokenizer: Any | None = None) -> DatasetBundle:
+    """Build primary train/eval datasets and preprocessing summary metadata."""
     del vocab_size
     total_examples = int(settings.get("subset_size", 25_000))
     eval_fraction = float(settings.get("eval_fraction", 0.1))
@@ -499,6 +525,7 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
     dropped_signature_overlap = 0
     for ex in eval_candidates:
         sig = str(ex.get("source_signature", ""))
+        # Avoid leakage between train/eval by removing signature duplicates.
         if sig and sig in train_signatures:
             dropped_signature_overlap += 1
             continue
@@ -542,6 +569,11 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
 
 
 def build_external_eval_dataset(name: str, settings: dict[str, Any], tokenizer: Any | None) -> DatasetBundle:
+    """Build external evaluation dataset bundle.
+
+    External datasets are eval-only semantically; we mirror train/eval handles
+    to satisfy a common DatasetBundle interface.
+    """
     if tokenizer is None:
         raise ValueError("Tokenizer is required for external evaluation datasets.")
     split = str(settings.get("split", "test"))

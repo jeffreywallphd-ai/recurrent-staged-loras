@@ -1,4 +1,8 @@
-"""Step-aware adapter bank for shared or stage-specialized recurrence."""
+"""Step-aware low-rank adapter routing for recurrent refinement.
+
+Supports shared-across-steps adapters and per-step adapters used by
+stage-specialized recurrence variants.
+"""
 
 from __future__ import annotations
 
@@ -50,6 +54,7 @@ class StepAwareLoRABank(nn.Module):
             )
 
     def get_adapter_for_step(self, step_idx: int) -> LowRankAdapter:
+        """Resolve the adapter to use for a recurrence step index."""
         if not self.enabled:
             raise KeyError("Adapters disabled")
         idx = 0 if self.shared_across_steps else step_idx
