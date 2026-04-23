@@ -79,7 +79,7 @@ def _validate_runs(runs: list[dict[str, object]]) -> None:
 
 
 ConditionSeedKey = tuple[str, str, str, str, str, int]
-ConditionFamilyKey = tuple[str, str, str, str, str]
+ConditionFamilyKey = tuple[str, str, str, str]
 
 
 def _group_runs(runs: list[dict[str, object]]) -> dict[ConditionSeedKey, dict[str, object]]:
@@ -105,12 +105,12 @@ def _group_runs(runs: list[dict[str, object]]) -> dict[ConditionSeedKey, dict[st
 
 def _extract_condition_families(
     grouped: dict[ConditionSeedKey, dict[str, object]], architecture_type: str, baseline_name: str
-) -> dict[tuple[str, str, str], dict[int, dict[str, object]]]:
-    families: dict[tuple[str, str, str], dict[int, dict[str, object]]] = {}
+) -> dict[tuple[str, str], dict[int, dict[str, object]]]:
+    families: dict[tuple[str, str], dict[int, dict[str, object]]] = {}
     for (arch, baseline, model, dataset, config, seed), row in grouped.items():
         if arch != architecture_type or baseline != baseline_name:
             continue
-        family_key = (model, dataset, config)
+        family_key = (model, dataset)
         families.setdefault(family_key, {})[seed] = row
     return families
 
@@ -132,22 +132,28 @@ def _require_homogeneous_family(
         raise ValueError(
             "Heterogeneous comparison group detected for planned confirmatory contrast "
             f"{architecture_type}: {baseline_a} vs {baseline_b}. "
-            f"Expected one (model_name, dataset_name, config_name) family per baseline, got "
+            f"Expected one (model_name, dataset_name) family per baseline, got "
             f"{sorted(families_a)} for {baseline_a} and {sorted(families_b)} for {baseline_b}."
         )
 
     family_a = next(iter(families_a))
     family_b = next(iter(families_b))
     if family_a != family_b:
+        mismatch_parts: list[str] = []
+        if family_a[0] != family_b[0]:
+            mismatch_parts.append(f"model_name differs ({family_a[0]} vs {family_b[0]})")
+        if family_a[1] != family_b[1]:
+            mismatch_parts.append(f"dataset_name differs ({family_a[1]} vs {family_b[1]})")
+        mismatch_text = "; ".join(mismatch_parts) if mismatch_parts else "unknown family mismatch"
         raise ValueError(
-            "Non-homogeneous planned contrast detected: compared groups must share identical "
-            f"(model_name, dataset_name, config_name), got {family_a} vs {family_b} "
-            f"for {architecture_type}: {baseline_a} vs {baseline_b}."
+            "Non-homogeneous planned contrast detected: confirmatory contrasts require matching "
+            "architecture_type, model_name, and dataset_name across baselines. "
+            f"Invalid contrast {architecture_type}: {baseline_a} vs {baseline_b} because {mismatch_text}."
         )
 
-    model_name, dataset_name, config_name = family_a
+    model_name, dataset_name = family_a
     return (
-        (architecture_type, baseline_a, model_name, dataset_name, config_name),
+        (architecture_type, baseline_a, model_name, dataset_name),
         families_a[family_a],
         families_b[family_b],
     )
@@ -242,14 +248,16 @@ def _compare_metric(
         baseline_a=baseline_a,
         baseline_b=baseline_b,
     )
-    _, _, model_name, dataset_name, config_name = family
+    _, _, model_name, dataset_name = family
     overlap = sorted(set(rows_a) & set(rows_b))
+    config_name_a = str(next(iter(rows_a.values())).get("config_name", ""))
+    config_name_b = str(next(iter(rows_b.values())).get("config_name", ""))
 
     if not overlap:
         if primary and not allow_unpaired:
             raise ValueError(
                 f"No overlapping seeds for confirmatory contrast {architecture_type}: {baseline_a} vs {baseline_b} "
-                f"(model={model_name}, dataset={dataset_name}, config={config_name}). "
+                f"(model={model_name}, dataset={dataset_name}, config_a={config_name_a}, config_b={config_name_b}). "
                 "Re-run with aligned seeds or pass --allow-unpaired to explicitly downgrade to descriptive."
             )
         all_a = sorted(rows_a)
@@ -265,7 +273,8 @@ def _compare_metric(
             "architecture_type": architecture_type,
             "model_name": model_name,
             "dataset_name": dataset_name,
-            "config_name": config_name,
+            "config_name_a": config_name_a,
+            "config_name_b": config_name_b,
             "metric_name": metric_name,
             "baseline_a": baseline_a,
             "baseline_b": baseline_b,
@@ -313,7 +322,8 @@ def _compare_metric(
         "architecture_type": architecture_type,
         "model_name": model_name,
         "dataset_name": dataset_name,
-        "config_name": config_name,
+        "config_name_a": config_name_a,
+        "config_name_b": config_name_b,
         "metric_name": metric_name,
         "baseline_a": baseline_a,
         "baseline_b": baseline_b,
@@ -344,61 +354,103 @@ def run_analysis(
     compute_controlled_only: bool = False,
     ablation_only: bool = False,
 ) -> dict[str, object]:
-    runs = _load_runs(input_path)
+    source_runs = _load_runs(input_path)
+    runs = [dict(r) for r in source_runs]
+    if dataset_scope in {"external", "all"}:
+        external_rows: list[dict[str, object]] = []
+        for row in source_runs:
+            external_eval = row.get("external_eval", {})
+            if not isinstance(external_eval, dict):
+                continue
+            for external_dataset_name, payload in external_eval.items():
+                if not isinstance(payload, dict):
+                    continue
+                flattened = dict(row)
+                flattened["dataset_name"] = external_dataset_name
+                flattened["dataset_scope"] = "external"
+                flattened["analysis_tier_default"] = "descriptive"
+                flattened["final_eval_loss"] = payload.get("eval_loss")
+                for metric_name in (
+                    "stage_2_token_accuracy",
+                    "stage_3_token_accuracy",
+                    "final_answer_accuracy",
+                    "final_answer_exact_match",
+                    "normalized_numeric_answer_accuracy",
+                ):
+                    flattened[metric_name] = payload.get(metric_name)
+                external_rows.append(flattened)
+        runs.extend(external_rows)
     if dataset_scope == "primary":
-        runs = [r for r in runs if r.get("dataset_name") not in (None, "")]
+        runs = [r for r in runs if r.get("dataset_scope") != "external"]
+    elif dataset_scope == "external":
+        runs = [r for r in runs if r.get("dataset_scope") == "external"]
     if compute_controlled_only:
         runs = [r for r in runs if bool(r.get("compute_control_enabled"))]
     if ablation_only:
-        runs = [r for r in runs if r.get("ablation_recurrent_steps") not in (None, "")]
+        runs = [r for r in runs if (r.get("ablation_recurrent_steps") not in (None, "") or r.get("ablation_lora_rank") not in (None, ""))]
     _validate_runs(runs)
     grouped = _group_runs(runs)
+    primary_rows = [r for r in runs if r.get("dataset_scope") != "external"]
+    external_rows = [r for r in runs if r.get("dataset_scope") == "external"]
+    primary_grouped = _group_runs(primary_rows)
+    external_grouped = _group_runs(external_rows)
 
     contrasts = build_confirmatory_contrasts()
     confirmatory_rows: list[dict[str, object]] = []
-    for contrast in contrasts:
-        for metric in PRIMARY_CONFIRMATORY_OUTCOMES:
-            confirmatory_rows.append(
-                _compare_metric(
-                    grouped=grouped,
-                    architecture_type=contrast.architecture_type,
-                    baseline_a=contrast.baseline_a,
-                    baseline_b=contrast.baseline_b,
-                    metric_name=metric,
-                    allow_unpaired=allow_unpaired,
-                    primary=True,
+    confirmatory_enabled = dataset_scope in {"primary", "all"}
+    if confirmatory_enabled:
+        for contrast in contrasts:
+            for metric in PRIMARY_CONFIRMATORY_OUTCOMES:
+                confirmatory_rows.append(
+                    _compare_metric(
+                        grouped=primary_grouped,
+                        architecture_type=contrast.architecture_type,
+                        baseline_a=contrast.baseline_a,
+                        baseline_b=contrast.baseline_b,
+                        metric_name=metric,
+                        allow_unpaired=allow_unpaired,
+                        primary=True,
+                    )
                 )
-            )
 
     _holm_adjust(confirmatory_rows)
 
     secondary_rows: list[dict[str, object]] = []
     efficiency_rows: list[dict[str, object]] = []
-    for contrast in contrasts:
-        for metric in SECONDARY_OUTCOMES:
-            secondary_rows.append(
-                _compare_metric(
-                    grouped=grouped,
-                    architecture_type=contrast.architecture_type,
-                    baseline_a=contrast.baseline_a,
-                    baseline_b=contrast.baseline_b,
-                    metric_name=metric,
-                    allow_unpaired=allow_unpaired,
-                    primary=False,
+    descriptive_grouped_sets: list[dict[ConditionSeedKey, dict[str, object]]] = []
+    if dataset_scope in {"primary", "all"}:
+        descriptive_grouped_sets.append(primary_grouped)
+    if dataset_scope in {"external", "all"}:
+        descriptive_grouped_sets.append(external_grouped)
+
+    for grouped_set in descriptive_grouped_sets:
+        if not grouped_set:
+            continue
+        for contrast in contrasts:
+            for metric in SECONDARY_OUTCOMES:
+                secondary_rows.append(
+                    _compare_metric(
+                        grouped=grouped_set,
+                        architecture_type=contrast.architecture_type,
+                        baseline_a=contrast.baseline_a,
+                        baseline_b=contrast.baseline_b,
+                        metric_name=metric,
+                        allow_unpaired=allow_unpaired,
+                        primary=False,
+                    )
                 )
-            )
-        for metric in EFFICIENCY_OUTCOMES:
-            efficiency_rows.append(
-                _compare_metric(
-                    grouped=grouped,
-                    architecture_type=contrast.architecture_type,
-                    baseline_a=contrast.baseline_a,
-                    baseline_b=contrast.baseline_b,
-                    metric_name=metric,
-                    allow_unpaired=allow_unpaired,
-                    primary=False,
+            for metric in EFFICIENCY_OUTCOMES:
+                efficiency_rows.append(
+                    _compare_metric(
+                        grouped=grouped_set,
+                        architecture_type=contrast.architecture_type,
+                        baseline_a=contrast.baseline_a,
+                        baseline_b=contrast.baseline_b,
+                        metric_name=metric,
+                        allow_unpaired=allow_unpaired,
+                        primary=False,
+                    )
                 )
-            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     confirmatory_json = output_dir / "statistical_analysis_confirmatory.json"
@@ -417,7 +469,8 @@ def run_analysis(
             "architecture_type",
             "model_name",
             "dataset_name",
-            "config_name",
+            "config_name_a",
+            "config_name_b",
             "metric_name",
             "baseline_a",
             "baseline_b",
@@ -463,6 +516,8 @@ def run_analysis(
             "ci_method": "bootstrap percentile CI for paired mean difference (5000 resamples, RNG seed=0)",
         },
         "allow_unpaired": allow_unpaired,
+        "dataset_scope": dataset_scope,
+        "confirmatory_enabled": confirmatory_enabled,
         "any_rows_downgraded_to_descriptive": any(bool(r.get("downgraded_to_descriptive")) for r in confirmatory_rows),
         "any_pairing_failures": any(r.get("pairing_used") == "unpaired" for r in confirmatory_rows),
     }

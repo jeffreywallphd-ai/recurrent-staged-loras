@@ -69,7 +69,12 @@ Validity constraints (fail-fast):
 - `ablations.lora_rank` requires at least one active adapter (`standard_lora.enabled` or `latent_refiner.adapter.enabled`).
 - Rank ablations are applied only to active adapter paths.
 
-Expanded run names use suffix `_r{steps}_rank{rank}` and write explicit fields:
+Expanded run names use only requested suffix dimensions:
+- recurrence-only `_r{steps}`
+- rank-only `_rank{rank}`
+- two-dimensional `_r{steps}_rank{rank}`
+
+Metrics always write explicit fields:
 - `ablation_recurrent_steps`
 - `ablation_lora_rank`
 
@@ -105,3 +110,7 @@ Planned confirmatory contrasts are fixed in advance and evaluated separately ins
 - `stage_specialized_recurrence` vs `latent_refiner_only`
 
 Confirmatory inference is limited to the primary outcomes (`final_answer_accuracy`, `final_answer_exact_match`, `final_answer_normalized_match`, `normalized_numeric_answer_accuracy`); symbolic accuracy is retained as secondary because applicability depends on parse success rates with Holm family-wise correction across the full confirmatory family. Secondary and efficiency outcomes remain descriptive by default.
+
+Confirmatory comparison validity requires matched `architecture_type`, `model_name`, and `dataset_name`; compared baselines can come from different config files and are audited with `config_name_a` / `config_name_b` in analysis outputs.
+
+External evaluation datasets are descriptive by default. They are included in analysis only in explicit external-analysis mode (`--dataset-scope external` or `--dataset-scope all`), and confirmatory inference remains primary-dataset-only unless intentionally changed.

@@ -133,20 +133,22 @@ Config:
 }
 ```
 
-`scripts/run_all_experiments.py` expands full combinations with strict compatibility checks:
+`scripts/run_all_experiments.py` expands only requested ablation dimensions with strict compatibility checks:
 - `ablations.recurrent_steps` is valid only when `model.latent_refiner.enabled=true`.
 - `ablations.lora_rank` is routed to active adapters only:
   - `model.standard_lora.rank` when `standard_lora.enabled=true`
   - `model.latent_refiner.adapter.rank` when `latent_refiner.adapter.enabled=true`
   - both when both adapters are active
   - hard error when neither adapter is active (`lora_rank ablation requested but no active adapter found`).
+- one-dimensional ablations are fully supported (`_r{steps}` recurrence-only, `_rank{rank}` rank-only), and two-dimensional ablations use `_r{steps}_rank{rank}`.
+- unused ablation axes remain `null` in `ablation_recurrent_steps` / `ablation_lora_rank`.
 
 Run-scope controls:
 - `--run-scope confirmatory` (default): excludes configs with ablations.
 - `--run-scope ablation`: runs only ablation-derived configs.
 - `--run-scope all`: includes both.
 
-Derived run names append `_r{steps}_rank{rank}` and metrics include `ablation_recurrent_steps` and `ablation_lora_rank`.
+Derived run names append only the requested ablation suffixes and metrics include `ablation_recurrent_steps` and `ablation_lora_rank`.
 Naming is explicit: `baseline_name` keeps full derived name, while `baseline_family` is the original pre-ablation baseline.
 
 ## Multi-seed aggregation protocol
@@ -202,12 +204,14 @@ For each group, mean/std are reported for:
   - `stage_specialized_recurrence` vs `standard_lora`
   - `stage_specialized_recurrence` vs `shared_recurrence`
   - `stage_specialized_recurrence` vs `latent_refiner_only`
+- **Homogeneous comparison family requirement:** confirmatory contrasts must match on `architecture_type`, `model_name`, and `dataset_name`; contrasted baselines may have different `config_name` values. Output rows retain `config_name_a` and `config_name_b` for audit traceability.
 - **Repeated-run unit:** run-level metrics with pairing by `seed` when overlap exists.
 - **Primary test:** `scipy.stats.wilcoxon` (two-sided, `zero_method="wilcox"`, `method="auto"`) per metric/contrast; `scipy.stats.ttest_rel` reported as sensitivity only.
 - **Family-wise error control:** Holm correction across confirmatory-eligible rows only (primary outcomes × planned contrasts × architectures, excluding downgraded descriptive rows with null p-values).
 - **Pairing fallback:** with `--allow-unpaired`, non-overlap yields descriptive downgraded rows (`raw_p_value=null`) excluded from Holm.
 - **Interval reporting:** bootstrap percentile 95% CI for paired mean difference (`mean_difference_ci_low/high`, 5000 resamples, fixed RNG seed=0).
 - **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.
+- **External evaluation analysis mode:** external datasets remain descriptive by default and are analyzable only when explicitly selected via `--dataset-scope external` (or included in `--dataset-scope all`); confirmatory inference remains primary-dataset-only.
 
 
 ## Threats to validity and known limitations

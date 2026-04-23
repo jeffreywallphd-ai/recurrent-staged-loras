@@ -370,6 +370,9 @@ def test_report_table_has_paper_facing_columns(tmp_path: Path) -> None:
     assert set(REPORT_TABLE_FIELDS).issubset(set(rows[0].keys()))
     row_types = {r["row_type"] for r in rows}
     assert "run" in row_types and "aggregate" in row_types
+    run_rows = [r for r in rows if r["row_type"] == "run"]
+    assert run_rows and all(r["run_scope"] for r in run_rows)
+    assert all(r["baseline_family"] for r in run_rows)
 
 
 def test_aggregates_include_stage_token_metrics(tmp_path: Path) -> None:
@@ -435,6 +438,9 @@ def test_lora_rank_ablation_routes_to_standard_lora(tmp_path: Path) -> None:
     )
     runs = _build_ablation_runs(cfg_path, run_scope="all")
     assert runs[0][1]["model"]["standard_lora"]["rank"] == 8
+    assert runs[0][0].endswith("__rank8.json")
+    assert runs[0][1]["ablation"]["recurrent_steps"] is None
+    assert runs[0][1]["ablation"]["lora_rank"] == 8
 
 
 def test_lora_rank_ablation_routes_to_refiner_adapter(tmp_path: Path) -> None:
@@ -484,6 +490,40 @@ def test_recurrent_step_ablation_requires_refiner(tmp_path: Path) -> None:
         _build_ablation_runs(cfg_path, run_scope="all")
 
 
+def test_recurrence_only_ablation_uses_recurrence_suffix(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "rec.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}}},
+                "ablations": {"recurrent_steps": [3]},
+            }
+        )
+    )
+    runs = _build_ablation_runs(cfg_path, run_scope="all")
+    assert runs[0][0].endswith("__r3.json")
+    assert runs[0][1]["baseline"] == "stage_specialized_recurrence_r3"
+    assert runs[0][1]["ablation"]["recurrent_steps"] == 3
+    assert runs[0][1]["ablation"]["lora_rank"] is None
+
+
+def test_rank_only_ablation_fails_on_base(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "base_rank.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "base",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none", "adapter": {"enabled": False}}},
+                "ablations": {"lora_rank": [16]},
+            }
+        )
+    )
+    import pytest
+    with pytest.raises(ValueError, match="no active adapter found"):
+        _build_ablation_runs(cfg_path, run_scope="all")
+
+
 def test_run_scope_filters_ablation_and_confirmatory(tmp_path: Path) -> None:
     cfg_path = tmp_path / "mix.json"
     cfg_path.write_text(
@@ -500,6 +540,28 @@ def test_run_scope_filters_ablation_and_confirmatory(tmp_path: Path) -> None:
     assert ablation and all(scope == "ablation" for _name, _raw, scope in ablation)
     all_runs = _build_ablation_runs(cfg_path, run_scope="all")
     assert len(all_runs) == len(ablation)
+
+
+def test_confirmatory_scope_excludes_ablation_derived_runs_in_script(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "scope.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "baseline": "stage_specialized_recurrence",
+                "model": {"name": "test/tiny", "architecture_type": "dense", "standard_lora": {"enabled": False}, "latent_refiner": {"enabled": True, "num_recurrent_steps": 2, "recurrence_mode": "stage_specialized", "adapter_sharing": "per_step", "adapter": {"enabled": True, "rank": 4}}},
+                "dataset": {"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 12, "sequence_length": 9, "eval_fraction": 0.25, "seed": 1}},
+                "training": {"batch_size": 2, "num_epochs": 1, "max_steps": 1, "eval_interval_steps": 1, "eval_enabled": True},
+                "ablations": {"recurrent_steps": [1, 2], "lora_rank": [4]},
+            }
+        )
+    )
+    subprocess.run(
+        [sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg_path), "--seeds", "1", "--preset-scope", "all", "--run-scope", "confirmatory"],
+        check=True,
+    )
+    summary = json.loads(Path("outputs/summary.json").read_text())
+    assert summary["runs"] == []
+    assert summary["aggregates"] == []
 
 
 def test_baseline_family_preserved_for_recurrence_ablations(tmp_path: Path) -> None:
