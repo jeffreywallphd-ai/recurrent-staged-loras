@@ -14,12 +14,13 @@ from models.recurrent_refiner import RecurrentLatentRefiner
 from models.staged_model import StagedLatentAdaptationModel
 
 SHARED_DATASET_DEFAULTS: dict[str, Any] = {
-    "name": "synthetic_integer_sequences",
+    "name": "metamath_qa",
     "settings": {
-        "num_examples": 64,
-        "sequence_length": 12,
-        "eval_fraction": 0.25,
+        "subset_size": 25_000,
+        "eval_fraction": 0.1,
         "seed": 0,
+        "cache_dir": "./.cache/hf_datasets",
+        "split": "train",
     },
 }
 
@@ -39,24 +40,20 @@ def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[s
 
 @dataclass(slots=True)
 class TrainingConfig:
-    """Minimal runtime training settings loaded from experiment JSON."""
-
-    batch_size: int = 4
+    batch_size: int = 1
     num_epochs: int = 1
-    max_steps: int = 8
-    learning_rate: float = 1e-3
+    max_steps: int = 100
+    learning_rate: float = 2e-4
     weight_decay: float = 0.0
     seed: int = 0
-    eval_interval_steps: int = 4
-    checkpoint_interval_steps: int = 4
+    eval_interval_steps: int = 100
+    checkpoint_interval_steps: int = 100
     eval_enabled: bool = True
     deterministic: bool = False
 
 
 @dataclass(slots=True)
 class RuntimeConfig:
-    """Top-level runtime config consumed by training entrypoint."""
-
     baseline: str
     variant: VariantConfig
     training: TrainingConfig
@@ -76,32 +73,28 @@ class RuntimeConfig:
 
 
 def load_experiment_config(path: str | Path) -> dict[str, Any]:
-    """Load a JSON experiment config."""
-    config_path = Path(path)
-    with config_path.open("r", encoding="utf-8") as fp:
+    with Path(path).open("r", encoding="utf-8") as fp:
         return json.load(fp)
 
 
 def load_variant_config(path: str | Path) -> VariantConfig:
-    """Load and parse experiment config into typed variant config."""
     return parse_variant_config(load_experiment_config(path))
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
-    """Load runtime settings (variant + training/data/output sections)."""
     raw = load_experiment_config(path)
     training_raw = raw.get("training", {})
     dataset_resolved, output_resolved = _merge_runtime_defaults(raw)
 
     training = TrainingConfig(
-        batch_size=int(training_raw.get("batch_size", 4)),
+        batch_size=int(training_raw.get("batch_size", 1)),
         num_epochs=int(training_raw.get("num_epochs", 1)),
-        max_steps=int(training_raw.get("max_steps", 8)),
-        learning_rate=float(training_raw.get("learning_rate", 1e-3)),
+        max_steps=int(training_raw.get("max_steps", 100)),
+        learning_rate=float(training_raw.get("learning_rate", 2e-4)),
         weight_decay=float(training_raw.get("weight_decay", 0.0)),
         seed=int(training_raw.get("seed", 0)),
-        eval_interval_steps=int(training_raw.get("eval_interval_steps", 4)),
-        checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 4)),
+        eval_interval_steps=int(training_raw.get("eval_interval_steps", 100)),
+        checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 100)),
         eval_enabled=bool(training_raw.get("eval_enabled", True)),
         deterministic=bool(training_raw.get("deterministic", False)),
     )
@@ -117,12 +110,7 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
 
 
 def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationModel:
-    """Construct the staged model path from typed variant config."""
-    base_model = FrozenBaseCausalLM(
-        model_name=variant.base.model_name,
-        freeze_base=variant.base.freeze_base,
-        trust_remote_code=variant.base.trust_remote_code,
-    )
+    base_model = FrozenBaseCausalLM(config=variant.base)
 
     if variant.standard_lora.enabled:
         base_model.enable_standard_lora(
@@ -135,7 +123,6 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
     refiner = None
     if variant.refiner.enabled:
         hidden_size = variant.refiner.hidden_size or base_model.hidden_size
-
         adapter_bank = None
         if variant.refiner_adapter.enabled:
             adapter_bank = StepAwareLoRABank(
@@ -154,5 +141,4 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
             adapter_bank=adapter_bank,
         )
 
-    model = StagedLatentAdaptationModel(config=variant, base_model=base_model, refiner=refiner)
-    return model
+    return StagedLatentAdaptationModel(config=variant, base_model=base_model, refiner=refiner)

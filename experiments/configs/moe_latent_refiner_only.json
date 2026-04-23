@@ -1,8 +1,8 @@
 {
   "baseline": "latent_refiner_only",
   "model": {
-    "name": "Qwen/Qwen3-8B",
-    "tokenizer_name": "Qwen/Qwen3-8B",
+    "name": "allenai/OLMoE-1B-7B-0125-Instruct",
+    "tokenizer_name": "allenai/OLMoE-1B-7B-0125-Instruct",
     "trust_remote_code": true,
     "dtype": "bfloat16",
     "device_map": "auto",
@@ -11,7 +11,7 @@
     "bnb_4bit_compute_dtype": "bfloat16",
     "attn_implementation": "sdpa",
     "gradient_checkpointing": true,
-    "architecture_type": "dense",
+    "architecture_type": "moe",
     "frozen_base": true,
     "standard_lora": {
       "enabled": false,

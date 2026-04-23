@@ -6,42 +6,41 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from statistics import mean, stdev
 
 from training.config_loader import load_runtime_config
 from training.engine import build_training_components, run_training_loop
 
 
 SUMMARY_FIELDS = [
-    "baseline",
+    "baseline_name",
     "run_name",
     "config_name",
+    "seed",
+    "architecture_type",
+    "model_name",
     "dataset_name",
-    "dataset_mode",
-    "config_path",
-    "metrics_path",
-    "output_dir",
-    "final_train_loss",
     "final_eval_loss",
-    "best_eval_loss",
     "eval_perplexity",
-    "eval_next_token_accuracy",
-    "eval_top_5_accuracy",
-    "eval_target_token_accuracy",
-    "eval_target_sequence_exact_match",
-    "global_steps_completed",
-    "epochs_completed",
+    "final_answer_accuracy",
+    "final_answer_exact_match",
+    "wall_time_seconds_total",
+    "tokens_seen_train",
+    "tokens_per_second_train",
     "trainable_params",
     "total_params",
     "trainable_param_fraction",
+    "recurrence_steps",
+    "effective_forward_passes_per_example",
+]
+
+AGG_METRICS = [
+    "final_eval_loss",
+    "eval_perplexity",
+    "final_answer_accuracy",
+    "final_answer_exact_match",
     "wall_time_seconds_total",
-    "wall_time_seconds_train",
-    "wall_time_seconds_eval",
-    "tokens_seen_train",
-    "tokens_seen_eval",
     "tokens_per_second_train",
-    "tokens_per_second_eval",
-    "steps_per_second",
-    "seconds_per_step",
 ]
 
 
@@ -49,23 +48,30 @@ def _collect_config_paths(configs: list[str], config_dir: str | None) -> list[Pa
     paths = [Path(c) for c in configs]
     if config_dir:
         paths.extend(sorted(Path(config_dir).glob("*.json")))
-    deduped: list[Path] = []
-    seen: set[Path] = set()
-    for p in paths:
-        rp = p.resolve()
-        if rp not in seen:
-            seen.add(rp)
-            deduped.append(p)
-    if not deduped:
-        raise ValueError("No config files provided. Use --configs and/or --config-dir.")
-    return deduped
+    if not paths:
+        raise ValueError("No config files provided")
+    return paths
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run all experiment configs sequentially")
-    parser.add_argument("--configs", nargs="*", default=[], help="Explicit config paths")
-    parser.add_argument("--config-dir", default=None, help="Directory containing *.json experiment configs")
+    parser.add_argument("--configs", nargs="*", default=[])
+    parser.add_argument("--config-dir", default=None)
+    parser.add_argument("--seeds", nargs="*", type=int, default=[11, 22, 33])
     return parser.parse_args()
+
+
+def _agg(rows: list[dict[str, object]]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for k in ("baseline_name", "config_name", "architecture_type", "model_name", "dataset_name"):
+        out[k] = rows[0].get(k)
+    out["num_runs"] = len(rows)
+    for metric in AGG_METRICS:
+        vals = [float(r[metric]) for r in rows if r.get(metric) is not None]
+        if vals:
+            out[f"{metric}_mean"] = mean(vals)
+            out[f"{metric}_std"] = stdev(vals) if len(vals) > 1 else 0.0
+    return out
 
 
 def main() -> None:
@@ -74,46 +80,36 @@ def main() -> None:
 
     runs: list[dict[str, object]] = []
     for config_path in config_paths:
-        runtime = load_runtime_config(config_path)
-        runtime.output["dir"] = str(Path("outputs") / runtime.baseline)
-        run_name = config_path.stem
+        for seed in args.seeds:
+            runtime = load_runtime_config(config_path)
+            runtime.training.seed = seed
+            runtime.dataset["settings"]["seed"] = seed
+            runtime.output["dir"] = str(Path("outputs") / runtime.baseline)
+            run_name = f"{config_path.stem}_seed{seed}"
+            result = run_training_loop(
+                components=build_training_components(runtime),
+                run_name=run_name,
+                config_name=config_path.name,
+            )
+            metrics = json.loads((result.output_dir / "metrics.json").read_text(encoding="utf-8"))
+            runs.append(metrics)
+            print(f"[ok] {run_name}")
 
-        components = build_training_components(runtime)
-        result = run_training_loop(components=components, run_name=run_name, config_name=config_path.name)
-
-        metrics_path = result.output_dir / "metrics.json"
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        run_row = {
-            "baseline": runtime.baseline,
-            "run_name": run_name,
-            "config_name": config_path.name,
-            "dataset_name": metrics.get("dataset_name"),
-            "dataset_mode": metrics.get("dataset_mode"),
-            "config_path": str(config_path),
-            "metrics_path": str(metrics_path),
-            "output_dir": str(result.output_dir),
-        }
-        for field in SUMMARY_FIELDS:
-            if field not in run_row and field in metrics:
-                run_row[field] = metrics[field]
-        runs.append({**run_row, "metrics": metrics})
-        print(f"[ok] baseline={runtime.baseline} run={run_name} metrics={metrics_path}")
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for row in runs:
+        key = (str(row["baseline_name"]), str(row["config_name"]))
+        grouped.setdefault(key, []).append(row)
+    aggregates = [_agg(rows) for rows in grouped.values()]
 
     output_dir = Path("outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = output_dir / "summary.json"
-    summary = {"runs": runs}
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    (output_dir / "summary.json").write_text(json.dumps({"runs": runs, "aggregates": aggregates}, indent=2), encoding="utf-8")
 
-    summary_csv_path = output_dir / "summary.csv"
-    with summary_csv_path.open("w", encoding="utf-8", newline="") as fp:
-        writer = csv.DictWriter(fp, fieldnames=SUMMARY_FIELDS)
-        writer.writeheader()
-        for run in runs:
-            writer.writerow({key: run.get(key) for key in SUMMARY_FIELDS})
-
-    print(f"[ok] summary={summary_path}")
-    print(f"[ok] summary_csv={summary_csv_path}")
+    with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as fp:
+        w = csv.DictWriter(fp, fieldnames=SUMMARY_FIELDS)
+        w.writeheader()
+        for r in runs:
+            w.writerow({k: r.get(k) for k in SUMMARY_FIELDS})
 
 
 if __name__ == "__main__":
