@@ -209,6 +209,76 @@ For each group, mean/std are reported for:
 - **Pilot presets:** `*_pilot.json` variants for smoke checks and quick iteration.
 - Default orchestration mode is reportable study runs only: `--preset-scope study`.
 
+## Which config should I use?
+
+Use explicit suffix-based families in `experiments/configs`:
+
+- **Confirmatory (reportable):** `*.json` with no family suffixes.
+- **Pilot (non-reportable):** `*_pilot.json`.
+- **Compute-controlled (reportable/descriptive depending analysis plan):** `*_compute_controlled.json`.
+- **External-eval checks (descriptive by default):** `*_external_eval.json`.
+- **Ablations (non-confirmatory unless explicitly opted into analysis):** `*_ablation.json`.
+- **Debug/smoke (non-reportable):** `*_debug.json` and `*_debug_external_eval.json`.
+
+Recommended workflows:
+
+1. **Full paper runs:** confirmatory family + seeds `11 22 33`.
+2. **Pilot runs:** `_pilot` family for faster end-to-end checks.
+3. **Quick bug checks:** `_debug` family (very small subset + low steps).
+4. **External evaluation checks:** `_external_eval` family (adds GSM8K/MATH/SVAMP entries).
+5. **Ablation sweeps:** `_ablation` family + `--run-scope ablation`.
+6. **Compute-controlled comparisons:** `_compute_controlled` family.
+
+You can now select these directly:
+
+```bash
+python scripts/run_all_experiments.py \
+  --config-dir experiments/configs \
+  --config-family debug \
+  --preset-scope all \
+  --seeds 7
+```
+
+```bash
+python scripts/run_all_experiments.py \
+  --config-dir experiments/configs \
+  --config-family compute_controlled \
+  --preset-scope all \
+  --seeds 11 22 33
+```
+
+### Ultra-fast debug/smoke external eval example (non-reportable)
+
+`stage_specialized_recurrence_debug_external_eval.json` and `moe_stage_specialized_recurrence_debug_external_eval.json` are intentionally tiny and debugging-oriented:
+- primary `subset_size` of `16`
+- `batch_size=1`
+- very low `max_steps`
+- single-seed friendly
+- tiny external subsets:
+  - `gsm8k`: `subset_size=3`
+  - `math`: `subset_size=3`
+  - `svamp`: `subset_size=3`
+
+### External dataset settings (per dataset entry)
+
+Each object under `dataset.external_evaluations` supports:
+
+- `name` (required): one of `gsm8k`, `math`, `svamp`
+- `split` (optional, default `test`)
+- `subset_size` (optional, default `0` = full split)
+- `seed` (optional, default `0`)
+
+Example:
+
+```json
+"dataset": {
+  "external_evaluations": [
+    {"name": "gsm8k", "split": "test", "subset_size": 3, "seed": 3},
+    {"name": "math", "split": "test", "subset_size": 3, "seed": 3}
+  ]
+}
+```
+
 ## Paper workflow (explicit)
 
 1. **Reportable runs only:** execute study configs (`experiments/configs/*.json`) with required seeds `11,22,33`; keep pilot configs out of paper numbers.
