@@ -65,32 +65,38 @@ python scripts/run_all_experiments.py --configs experiments/configs/base.json ex
 Output structure for multi-run mode:
 
 ```text
-output/<baseline>/<config_stem>/
+outputs/<baseline>/<config_stem>/
   config.json
   metadata.json
   metrics.json
   checkpoint.pt
 
-output/summary.json
-output/summary.csv
+outputs/summary.json
+outputs/summary.csv
 ```
 
 ### Compare metrics from runs
 
 ```bash
-python scripts/compare_metrics.py output/base/base/metrics.json output/standard_lora/standard_lora/metrics.json
+python scripts/compare_metrics.py outputs/base/base/metrics.json outputs/standard_lora/standard_lora/metrics.json
 ```
 
-`metrics.json` now includes reproducibility context, outcome metrics, and compute/efficiency metrics.
+`metrics.json` includes reproducibility context, benchmark outcome metrics, and compute/efficiency metrics.
 Core fields:
 - Run/context: `run_name`, `config_name`, `baseline_name`, `dataset_name`, `dataset_mode`, `dataset_train_examples`, `dataset_eval_examples`, `batch_size`, `learning_rate`, `weight_decay`, `seed`, `deterministic`, `backend`
-- Outcome: `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `global_steps_completed`, `epochs_completed`
+- Outcome metrics: `final_train_loss`, `final_eval_loss`, `best_eval_loss`, `eval_perplexity`, `train_perplexity`, `eval_next_token_accuracy`, `eval_top_5_accuracy`, `global_steps_completed`, `epochs_completed`
+- Task-specific metrics (structured sequence only): `eval_target_token_accuracy`, `eval_target_sequence_exact_match`
 - Compute/efficiency: `wall_time_seconds_total`, `wall_time_seconds_train`, `wall_time_seconds_eval`, `tokens_seen_train`, `tokens_seen_eval`, `tokens_per_second_train`, `tokens_per_second_eval`, `seconds_per_step`, `steps_per_second`
 - Parameterization: `trainable_params`, `total_params`, `trainable_param_fraction`
 - Compatibility aliases: `train_loss`, `eval_loss`, `num_steps`, `num_epochs`
 
-`output/summary.json` stores `{"runs": [...]}` where each item is a run record (not baseline-overwritten), including baseline, run/config identifiers, paths, and key copied metrics.
-`output/summary.csv` provides a tabular version for downstream empirical analysis.
+Timing semantics are strict:
+- `wall_time_seconds_train` excludes all evaluation passes.
+- `wall_time_seconds_eval` includes interval and final evaluation.
+- `tokens_seen_eval` includes interval and final evaluation tokens.
+
+`outputs/summary.json` stores `{"runs": [...]}` where each item is one run record, including identifiers, paths, and copied comparison metrics.
+`outputs/summary.csv` provides a deterministic tabular version for downstream empirical analysis.
 
 ## Reading order
 

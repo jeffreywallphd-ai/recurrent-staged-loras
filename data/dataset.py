@@ -131,7 +131,9 @@ def generate_structured_sequence_examples(
         tokens = torch.tensor(prefix + target, dtype=torch.long)
         if int(tokens.numel()) != total_length:
             raise RuntimeError("invalid structured example length")
-        examples.append({"input_ids": tokens, "labels": tokens.clone()})
+        target_mask = torch.zeros(total_length, dtype=torch.bool)
+        target_mask[prefix_length:] = True
+        examples.append({"input_ids": tokens, "labels": tokens.clone(), "target_mask": target_mask})
     return examples
 
 
@@ -140,7 +142,10 @@ def collate_token_sequences(batch: list[Example]) -> dict[str, torch.Tensor]:
     input_ids = torch.stack([item["input_ids"] for item in batch], dim=0)
     labels = torch.stack([item["labels"] for item in batch], dim=0)
     attention_mask = torch.ones_like(input_ids)
-    return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
+    collated = {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
+    if all("target_mask" in item for item in batch):
+        collated["target_mask"] = torch.stack([item["target_mask"].bool() for item in batch], dim=0)
+    return collated
 
 
 @dataclass(slots=True)
