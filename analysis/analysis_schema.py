@@ -58,4 +58,4 @@ def build_confirmatory_contrasts() -> list[PlannedContrast]:
 CONFIRMATORY_FWER_METHOD = "holm"
 ALPHA = 0.05
 
-REQUIRED_ID_COLUMNS = ["architecture_type", "baseline_name", "seed"]
+REQUIRED_ID_COLUMNS = ["architecture_type", "baseline_name", "model_name", "dataset_name", "config_name", "seed"]

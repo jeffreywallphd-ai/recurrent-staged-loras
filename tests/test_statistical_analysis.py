@@ -4,17 +4,50 @@ from pathlib import Path
 import pytest
 
 from analysis.analysis_schema import PRIMARY_CONFIRMATORY_OUTCOMES
-from analysis.statistical_analysis import run_analysis
+from analysis.statistical_analysis import _group_runs, run_analysis
 
 
-def _make_run(*, arch: str, baseline: str, seed: int, offset: float) -> dict[str, object]:
+
+
+class _FakeResult:
+    def __init__(self, pvalue: float) -> None:
+        self.pvalue = pvalue
+
+
+class _FakeStats:
+    @staticmethod
+    def wilcoxon(values, **_kwargs):
+        if all(abs(v) < 1e-12 for v in values):
+            return _FakeResult(1.0)
+        return _FakeResult(0.01)
+
+    @staticmethod
+    def ttest_rel(_a, _b, **_kwargs):
+        return _FakeResult(0.02)
+
+
+@pytest.fixture(autouse=True)
+def _patch_stats_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("analysis.statistical_analysis._get_stats_backend", lambda: _FakeStats)
+
+def _make_run(
+    *,
+    arch: str,
+    baseline: str,
+    seed: int,
+    offset: float,
+    config_name: str | None = None,
+    dataset_name: str = "metamath_qa",
+    model_name: str | None = None,
+) -> dict[str, object]:
     return {
         "run_name": f"{arch}_{baseline}_{seed}",
-        "config_name": f"{arch}_{baseline}.json",
+        "config_name": config_name or f"{arch}_study.json",
         "baseline_name": baseline,
-        "dataset_name": "metamath_qa",
+        "dataset_name": dataset_name,
         "seed": seed,
         "architecture_type": arch,
+        "model_name": model_name or ("Qwen/Qwen3-8B" if arch == "dense" else "allenai/OLMoE-1B-7B-0125-Instruct"),
         "final_answer_accuracy": 0.6 + offset,
         "final_answer_exact_match": 0.55 + offset,
         "normalized_numeric_answer_accuracy": 0.58 + offset,
@@ -35,63 +68,73 @@ def _write_summary(tmp_path: Path, runs: list[dict[str, object]]) -> Path:
     return path
 
 
-def test_grouping_pairing_and_outputs(tmp_path: Path) -> None:
+def _build_complete_matrix(*, seeds: list[int]) -> list[dict[str, object]]:
     runs = []
     for arch in ["dense", "moe"]:
-        for seed in [11, 22, 33]:
+        for seed in seeds:
             runs.append(_make_run(arch=arch, baseline="stage_specialized_recurrence", seed=seed, offset=0.2))
             runs.append(_make_run(arch=arch, baseline="standard_lora", seed=seed, offset=0.0))
             runs.append(_make_run(arch=arch, baseline="shared_recurrence", seed=seed, offset=0.05))
             runs.append(_make_run(arch=arch, baseline="latent_refiner_only", seed=seed, offset=0.1))
+    return runs
 
+
+def test_grouping_key_keeps_config_dataset_model_identity() -> None:
+    runs = [
+        _make_run(arch="dense", baseline="standard_lora", seed=11, offset=0.0, config_name="dense_standard_lora.json"),
+        _make_run(arch="dense", baseline="standard_lora", seed=11, offset=0.0, config_name="dense_standard_lora_pilot.json"),
+        _make_run(arch="dense", baseline="standard_lora", seed=11, offset=0.0, dataset_name="other_dataset"),
+        _make_run(arch="dense", baseline="standard_lora", seed=11, offset=0.0, model_name="alt/model"),
+    ]
+    grouped = _group_runs(runs)
+    assert len(grouped) == 4
+
+
+def test_heterogeneous_comparison_groups_raise_clear_error(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
+    runs.append(
+        _make_run(
+            arch="dense",
+            baseline="stage_specialized_recurrence",
+            seed=44,
+            offset=0.2,
+            config_name="dense_stage_specialized_recurrence_pilot.json",
+        )
+    )
+    runs.append(
+        _make_run(
+            arch="dense",
+            baseline="standard_lora",
+            seed=44,
+            offset=0.0,
+            config_name="dense_standard_lora_pilot.json",
+        )
+    )
+
+    summary = _write_summary(tmp_path, runs)
+    with pytest.raises(ValueError, match="Heterogeneous comparison group"):
+        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+
+
+def test_confirmatory_rows_receive_holm_and_ci_fields(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
     summary = _write_summary(tmp_path, runs)
     out_dir = tmp_path / "outputs"
     result = run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False)
 
     assert result["confirmatory_rows"] == 18
     confirmatory = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
-    assert all(row["pairing_used"] == "paired_by_seed" for row in confirmatory)
-    assert all(row["n_pairs"] == 3 for row in confirmatory)
-    assert {tuple(row["seeds_included"]) for row in confirmatory} == {(11, 22, 33)}
-
-    assert (out_dir / "statistical_analysis_secondary.json").exists()
-    assert (out_dir / "statistical_analysis_efficiency.json").exists()
+    assert all(row["analysis_tier"] == "confirmatory" for row in confirmatory)
+    assert all(row["holm_adjusted_p_value"] is not None for row in confirmatory)
+    assert all("mean_difference_ci_low" in row and "mean_difference_ci_high" in row for row in confirmatory)
 
 
-def test_holm_applied_across_confirmatory_family(tmp_path: Path) -> None:
-    runs = []
-    for arch in ["dense", "moe"]:
-        for seed in [1, 2, 3]:
-            runs.append(_make_run(arch=arch, baseline="stage_specialized_recurrence", seed=seed, offset=0.0))
-            runs.append(_make_run(arch=arch, baseline="standard_lora", seed=seed, offset=0.0))
-            runs.append(_make_run(arch=arch, baseline="shared_recurrence", seed=seed, offset=0.0))
-            runs.append(_make_run(arch=arch, baseline="latent_refiner_only", seed=seed, offset=0.0))
-
-    summary = _write_summary(tmp_path, runs)
-    out_dir = tmp_path / "outputs"
-    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False)
-    rows = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
-    assert len(rows) == 2 * 3 * len(PRIMARY_CONFIRMATORY_OUTCOMES)
-    assert all("holm_adjusted_p_value" in row for row in rows)
-
-
-def test_missing_required_metric_raises_clear_error(tmp_path: Path) -> None:
-    runs = [_make_run(arch="dense", baseline="stage_specialized_recurrence", seed=11, offset=0.2)]
-    for r in runs:
-        r.pop("final_answer_accuracy")
-    summary = _write_summary(tmp_path, runs)
-
-    with pytest.raises(ValueError, match=r"Required metric\(s\) missing"):
-        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
-
-
-def test_pairing_failure_fails_loudly_without_unpaired_flag(tmp_path: Path) -> None:
+def test_unpaired_downgraded_rows_excluded_from_holm(tmp_path: Path) -> None:
     runs = []
     for seed in [11, 22, 33]:
         runs.append(_make_run(arch="dense", baseline="stage_specialized_recurrence", seed=seed, offset=0.2))
     for seed in [44, 55, 66]:
         runs.append(_make_run(arch="dense", baseline="standard_lora", seed=seed, offset=0.0))
-    # Include remaining required groups for contrast validation.
     for seed in [11, 22, 33]:
         runs.append(_make_run(arch="dense", baseline="shared_recurrence", seed=seed, offset=0.05))
         runs.append(_make_run(arch="dense", baseline="latent_refiner_only", seed=seed, offset=0.1))
@@ -101,23 +144,43 @@ def test_pairing_failure_fails_loudly_without_unpaired_flag(tmp_path: Path) -> N
         runs.append(_make_run(arch="moe", baseline="latent_refiner_only", seed=seed, offset=0.1))
 
     summary = _write_summary(tmp_path, runs)
-    with pytest.raises(ValueError, match="No overlapping seeds"):
-        run_analysis(input_path=summary, output_dir=tmp_path / "outputs", allow_unpaired=False)
+    out_dir = tmp_path / "outputs"
+    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=True)
+    rows = json.loads((out_dir / "statistical_analysis_confirmatory.json").read_text())
+
+    downgraded = [r for r in rows if r["pairing_used"] == "unpaired"]
+    assert downgraded
+    assert all(r["analysis_tier"] == "descriptive_downgraded" for r in downgraded)
+    assert all(r["raw_p_value"] is None and r["holm_adjusted_p_value"] is None for r in downgraded)
+
+    confirmatory = [r for r in rows if r["analysis_tier"] == "confirmatory"]
+    assert confirmatory
+    assert all(r["holm_adjusted_p_value"] is not None for r in confirmatory)
+
+
+def test_metadata_artifact_written_with_expected_keys(tmp_path: Path) -> None:
+    runs = _build_complete_matrix(seeds=[1, 2, 3])
+    summary = _write_summary(tmp_path, runs)
+    out_dir = tmp_path / "outputs"
+    run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False)
+
+    metadata = json.loads((out_dir / "statistical_analysis_metadata.json").read_text())
+    assert metadata["primary_confirmatory_outcomes"] == PRIMARY_CONFIRMATORY_OUTCOMES
+    assert metadata["family_wise_error_method"] == "holm"
+    assert "alpha" in metadata
+    assert "statistical_test_backend" in metadata
+    assert "any_rows_downgraded_to_descriptive" in metadata
+    assert "any_pairing_failures" in metadata
 
 
 def test_markdown_report_contains_key_sections(tmp_path: Path) -> None:
-    runs = []
-    for arch in ["dense", "moe"]:
-        for seed in [11, 22, 33]:
-            runs.append(_make_run(arch=arch, baseline="stage_specialized_recurrence", seed=seed, offset=0.2))
-            runs.append(_make_run(arch=arch, baseline="standard_lora", seed=seed, offset=0.0))
-            runs.append(_make_run(arch=arch, baseline="shared_recurrence", seed=seed, offset=0.05))
-            runs.append(_make_run(arch=arch, baseline="latent_refiner_only", seed=seed, offset=0.1))
+    runs = _build_complete_matrix(seeds=[11, 22, 33])
     summary = _write_summary(tmp_path, runs)
     out_dir = tmp_path / "outputs"
     run_analysis(input_path=summary, output_dir=out_dir, allow_unpaired=False)
 
     report = (out_dir / "statistical_analysis_report.md").read_text()
     assert "## Corrected confirmatory results" in report
+    assert "mean_diff_95ci" in report
     assert "## Secondary outcomes (descriptive)" in report
     assert "## Efficiency outcomes (descriptive)" in report

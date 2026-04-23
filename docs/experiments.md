@@ -139,6 +139,8 @@ For each group, mean/std are reported for:
   - `stage_specialized_recurrence` vs `shared_recurrence`
   - `stage_specialized_recurrence` vs `latent_refiner_only`
 - **Repeated-run unit:** run-level metrics with pairing by `seed` when overlap exists.
-- **Primary test:** paired Wilcoxon signed-rank per metric/contrast (paired t-test reported only as sensitivity context).
-- **Family-wise error control:** Holm correction across the full confirmatory family (all primary outcomes × all planned contrasts × both architectures).
+- **Primary test:** `scipy.stats.wilcoxon` (two-sided, `zero_method="wilcox"`, `method="auto"`) per metric/contrast; `scipy.stats.ttest_rel` reported as sensitivity only.
+- **Family-wise error control:** Holm correction across confirmatory-eligible rows only (primary outcomes × planned contrasts × architectures, excluding downgraded descriptive rows with null p-values).
+- **Pairing fallback:** with `--allow-unpaired`, non-overlap yields descriptive downgraded rows (`raw_p_value=null`) excluded from Holm.
+- **Interval reporting:** bootstrap percentile 95% CI for paired mean difference (`mean_difference_ci_low/high`, 5000 resamples, fixed RNG seed=0).
 - **Secondary and efficiency outcomes:** analyzed in separate descriptive artifacts and not pooled into confirmatory correction by default.
