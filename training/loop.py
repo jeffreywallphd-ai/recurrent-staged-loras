@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
+from typing import Any
+import re
 
 import torch
 import torch.nn.functional as F
@@ -38,9 +40,34 @@ def _masked_ce(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -
     return (per_tok * mask.float()).sum() / denom
 
 
-def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Tensor]) -> torch.Tensor:
-    out = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+def _normalize_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _normalize_numeric(text: str) -> str | None:
+    match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
+    if not match:
+        return None
+    try:
+        return str(float(match.group(0)))
+    except ValueError:
+        return None
+
+
+def _decode_answer_tokens(token_ids: torch.Tensor, tokenizer: Any | None) -> str:
+    ids = [int(x) for x in token_ids.tolist()]
+    if tokenizer is not None:
+        return str(tokenizer.decode(ids, skip_special_tokens=True)).strip()
+    return " ".join(str(x) for x in ids).strip()
+
+
+def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Tensor | list[str]]) -> torch.Tensor:
+    input_ids = batch["input_ids"]
+    attention_mask = batch["attention_mask"]
+    assert isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)
+    out = model(input_ids=input_ids, attention_mask=attention_mask)
     labels = batch["labels"][:, 1:]
+    assert isinstance(labels, torch.Tensor)
 
     if model.config.refiner.enabled and out.extras["per_step"]:
         step_hidden_states = out.extras["per_step"]
@@ -49,8 +76,8 @@ def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Te
         stage1 = batch["stage1_mask"][:, 1:]
         stage2 = batch["stage2_mask"][:, 1:]
         stage3 = batch["stage3_mask"][:, 1:]
+        assert isinstance(stage1, torch.Tensor) and isinstance(stage2, torch.Tensor) and isinstance(stage3, torch.Tensor)
 
-        # align recurrence steps with stages; final step always targets stage 3
         stage_masks = [stage1, stage2, stage3]
         losses: list[torch.Tensor] = []
         for idx, step_logits in enumerate(logits_steps):
@@ -65,22 +92,29 @@ def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Te
 def train_epoch(
     *,
     model: StagedLatentAdaptationModel,
-    dataloader: DataLoader[dict[str, torch.Tensor]],
+    dataloader: DataLoader[dict[str, torch.Tensor | list[str]]],
     optimizer: torch.optim.Optimizer | None,
     max_steps: int,
     global_step_start: int,
-) -> tuple[float, int, float, int]:
+    eval_enabled: bool,
+    eval_interval_steps: int,
+    eval_loader: DataLoader[dict[str, torch.Tensor | list[str]]],
+    tokenizer: Any | None,
+) -> tuple[float, int, float, int, list[EvalResult]]:
     model.train()
     step = global_step_start
     losses: list[float] = []
     tokens_seen = 0
     wall = 0.0
+    interval_results: list[EvalResult] = []
 
     for batch in dataloader:
         if step >= max_steps:
             break
         start = perf_counter()
-        tokens_seen += int(batch["labels"][:, 1:].ne(-100).sum().item())
+        labels = batch["labels"][:, 1:]
+        assert isinstance(labels, torch.Tensor)
+        tokens_seen += int(labels.ne(-100).sum().item())
         loss = loss_for_batch(model, batch)
         losses.append(float(loss.item()))
         if optimizer is not None:
@@ -89,11 +123,15 @@ def train_epoch(
             optimizer.step()
         step += 1
         wall += perf_counter() - start
+
+        if eval_enabled and eval_interval_steps > 0 and (step % eval_interval_steps == 0):
+            interval_results.append(evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer))
+
     avg = float(sum(losses) / len(losses)) if losses else float("nan")
-    return avg, step - global_step_start, wall, tokens_seen
+    return avg, step - global_step_start, wall, tokens_seen, interval_results
 
 
-def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[str, torch.Tensor]]) -> EvalResult:
+def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[str, torch.Tensor | list[str]]], tokenizer: Any | None = None) -> EvalResult:
     model.eval()
     start = perf_counter()
     losses: list[float] = []
@@ -101,57 +139,91 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
 
     s2_correct = s2_total = 0
     s3_correct = s3_total = 0
+
+    answer_correct = answer_total = 0
     final_exact = final_total = 0
+    numeric_correct = numeric_total = 0
 
     with torch.no_grad():
         for batch in dataloader:
-            out = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-            logits = out.logits[:, :-1, :]
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
             labels = batch["labels"][:, 1:]
+            stage2_mask = batch["stage2_mask"][:, 1:]
+            stage3_mask = batch["stage3_mask"][:, 1:]
+            assert isinstance(input_ids, torch.Tensor)
+            assert isinstance(attention_mask, torch.Tensor)
+            assert isinstance(labels, torch.Tensor)
+            assert isinstance(stage2_mask, torch.Tensor)
+            assert isinstance(stage3_mask, torch.Tensor)
+
+            out = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = out.logits[:, :-1, :]
             pred = logits.argmax(dim=-1)
 
             losses.append(float(F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1)).item()))
-            tokens_seen += int(labels.numel())
+            tokens_seen += int(labels.ne(-100).sum().item())
 
-            s2_mask = batch["stage2_mask"][:, 1:]
-            s3_mask = batch["stage3_mask"][:, 1:]
-            if int(s2_mask.sum().item()) > 0:
-                s2_total += int(s2_mask.sum().item())
-                s2_correct += int((pred.eq(labels) & s2_mask).sum().item())
-            if int(s3_mask.sum().item()) > 0:
-                s3_total += int(s3_mask.sum().item())
-                s3_correct += int((pred.eq(labels) & s3_mask).sum().item())
-                per_sample_exact = ((~s3_mask) | pred.eq(labels)).all(dim=1)
-                final_exact += int(per_sample_exact.sum().item())
-                final_total += int(per_sample_exact.shape[0])
+            if int(stage2_mask.sum().item()) > 0:
+                s2_total += int(stage2_mask.sum().item())
+                s2_correct += int((pred.eq(labels) & stage2_mask).sum().item())
+            if int(stage3_mask.sum().item()) > 0:
+                s3_total += int(stage3_mask.sum().item())
+                s3_correct += int((pred.eq(labels) & stage3_mask).sum().item())
+
+            target_texts = batch.get("answer_text_normalized", [])
+            target_numeric = batch.get("answer_numeric_normalized", [])
+            for i in range(labels.shape[0]):
+                sample_mask = stage3_mask[i]
+                if int(sample_mask.sum().item()) == 0:
+                    continue
+                pred_answer = _decode_answer_tokens(pred[i][sample_mask], tokenizer)
+                pred_norm = _normalize_text(pred_answer)
+                gold_norm = _normalize_text(str(target_texts[i])) if i < len(target_texts) else ""
+
+                answer_total += 1
+                if pred_norm == gold_norm:
+                    answer_correct += 1
+                    final_exact += 1
+                final_total += 1
+
+                gold_num = str(target_numeric[i]).strip() if i < len(target_numeric) else ""
+                if gold_num:
+                    numeric_total += 1
+                    pred_num = _normalize_numeric(pred_answer)
+                    if pred_num == gold_num:
+                        numeric_correct += 1
 
     model.train()
     loss = float(sum(losses) / len(losses)) if losses else float("nan")
     stage2_acc = float(s2_correct / s2_total) if s2_total > 0 else None
     stage3_acc = float(s3_correct / s3_total) if s3_total > 0 else None
+    final_acc = float(answer_correct / answer_total) if answer_total > 0 else None
     exact = float(final_exact / final_total) if final_total > 0 else None
+    numeric_acc = float(numeric_correct / numeric_total) if numeric_total > 0 else None
     return EvalResult(
         loss=loss,
         wall_time_seconds=float(perf_counter() - start),
         tokens_seen=tokens_seen,
         stage_2_token_accuracy=stage2_acc,
         stage_3_token_accuracy=stage3_acc,
-        final_answer_accuracy=stage3_acc,
+        final_answer_accuracy=final_acc,
         final_answer_exact_match=exact,
-        normalized_numeric_answer_accuracy=stage3_acc,
+        normalized_numeric_answer_accuracy=numeric_acc,
     )
 
 
 def run_training(
     *,
     model: StagedLatentAdaptationModel,
-    train_loader: DataLoader[dict[str, torch.Tensor]],
-    eval_loader: DataLoader[dict[str, torch.Tensor]],
+    train_loader: DataLoader[dict[str, torch.Tensor | list[str]]],
+    eval_loader: DataLoader[dict[str, torch.Tensor | list[str]]],
     optimizer: torch.optim.Optimizer | None,
     num_epochs: int,
     max_steps: int,
     eval_interval_steps: int,
     eval_enabled: bool,
+    tokenizer: Any | None = None,
 ) -> dict[str, float | int]:
     run_start = perf_counter()
     global_steps = 0
@@ -162,24 +234,29 @@ def run_training(
     eval_results: list[EvalResult] = []
 
     for _ in range(num_epochs):
-        train_loss, done, wall, tokens = train_epoch(
+        train_loss, done, wall, tokens, interval_evals = train_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             max_steps=max_steps,
             global_step_start=global_steps,
+            eval_enabled=eval_enabled,
+            eval_interval_steps=eval_interval_steps,
+            eval_loader=eval_loader,
+            tokenizer=tokenizer,
         )
         global_steps += done
         tokens_train += tokens
         wall_train += wall
         epochs_completed += 1
-        if eval_enabled and eval_interval_steps > 0:
-            eval_results.append(evaluate(model=model, dataloader=eval_loader))
+        eval_results.extend(interval_evals)
         if global_steps >= max_steps:
             break
 
     if eval_enabled:
-        eval_results.append(evaluate(model=model, dataloader=eval_loader))
+        needs_final_eval = not eval_results or (eval_interval_steps <= 0 or global_steps % eval_interval_steps != 0)
+        if needs_final_eval:
+            eval_results.append(evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer))
 
     last_eval = eval_results[-1]
     best_eval_loss = min(x.loss for x in eval_results)

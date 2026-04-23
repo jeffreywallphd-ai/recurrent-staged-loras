@@ -1,8 +1,8 @@
 {
   "baseline": "standard_lora",
   "model": {
-    "name": "allenai/OLMoE-1B-7B-0125-Instruct",
-    "tokenizer_name": "allenai/OLMoE-1B-7B-0125-Instruct",
+    "name": "Qwen/Qwen3-8B",
+    "tokenizer_name": "Qwen/Qwen3-8B",
     "trust_remote_code": true,
     "dtype": "bfloat16",
     "device_map": "auto",
@@ -11,7 +11,7 @@
     "bnb_4bit_compute_dtype": "bfloat16",
     "attn_implementation": "sdpa",
     "gradient_checkpointing": true,
-    "architecture_type": "moe",
+    "architecture_type": "dense",
     "frozen_base": true,
     "standard_lora": {
       "enabled": true,
@@ -38,7 +38,7 @@
   "dataset": {
     "name": "metamath_qa",
     "settings": {
-      "subset_size": 25000,
+      "subset_size": 5000,
       "eval_fraction": 0.1,
       "seed": 11,
       "cache_dir": "./.cache/hf_datasets",
@@ -48,12 +48,12 @@
   "training": {
     "batch_size": 1,
     "num_epochs": 1,
-    "max_steps": 2000,
+    "max_steps": 100,
     "learning_rate": 0.0002,
     "weight_decay": 0.0,
     "seed": 11,
-    "eval_interval_steps": 200,
-    "checkpoint_interval_steps": 200,
+    "eval_interval_steps": 100,
+    "checkpoint_interval_steps": 100,
     "eval_enabled": true,
     "deterministic": false
   },
