@@ -1,5 +1,6 @@
 # Docs index
 
+- `../README.md` — installation, environment setup, quick start, GPU guidance, and troubleshooting.
 - `architecture.md` — model path and stage-aware recurrence overview.
 - `baselines.md` — baseline definitions across dense/MoE.
 - `experiments.md` — full study protocol, answer-span metrics semantics, symbolic/numeric evaluation protocol, paper workflow, and aggregation artifacts.
