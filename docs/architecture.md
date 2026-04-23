@@ -19,8 +19,11 @@ This placement supports controlled testing of latent adaptation without changing
 
 - **Frozen base wrapper** (`models/frozen_base.py`)
   - Loads and runs the base model backbone.
+  - Uses a tiny internal torch causal-LM-like module for `example/*` configs.
+  - Uses Hugging Face causal LM for non-example names when `transformers` is available.
   - Exposes final hidden states and LM head access.
   - Keeps base parameters frozen by default.
+  - Standard LoRA is implemented directly for internal target modules and as a first-pass hidden-state residual path for Hugging Face backends.
 
 - **Latent refiner** (`models/recurrent_refiner.py`)
   - Applies optional recurrence in latent space.

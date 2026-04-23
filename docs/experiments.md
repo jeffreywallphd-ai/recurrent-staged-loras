@@ -29,7 +29,7 @@ Across the matrix, keep fixed where feasible:
 
 1. Each baseline config loads successfully.
 2. Baseline selector routes each config to the intended variant.
-3. Training entrypoint can build a real model path and run a tiny forward smoke pass.
+3. Training entrypoint can build a real model path and run a tiny forward/loss/backward trainability smoke pass.
 4. Training entrypoint writes run metadata for reproducibility.
 
 ## Failure criteria (scaffold stage)

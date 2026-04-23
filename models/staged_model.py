@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from torch import nn
+import torch
+
 from .config import VariantConfig
 from .frozen_base import FrozenBaseCausalLM
 from .recurrent_refiner import RecurrentLatentRefiner
@@ -14,17 +17,13 @@ from .recurrent_refiner import RecurrentLatentRefiner
 class ModelForwardOutput:
     """Unified output for experiment runners."""
 
-    logits: Any
-    refined_hidden_states: Any
+    logits: torch.Tensor
+    refined_hidden_states: torch.Tensor
     extras: dict[str, Any]
 
 
-class StagedLatentAdaptationModel:
-    """Composes base model, latent refiner, and logits projection.
-
-    Planned execution path:
-    frozen base LM -> latent refiner (optional recurrent) -> LM head
-    """
+class StagedLatentAdaptationModel(nn.Module):
+    """Composes base model, optional refiner, and LM head projection."""
 
     def __init__(
         self,
@@ -32,18 +31,18 @@ class StagedLatentAdaptationModel:
         base_model: FrozenBaseCausalLM,
         refiner: RecurrentLatentRefiner | None,
     ) -> None:
+        super().__init__()
         self.config = config
         self.base_model = base_model
         self.refiner = refiner
 
-    def forward(self, input_ids: Any, attention_mask: Any | None = None) -> ModelForwardOutput:
-        """Forward pass used by training and evaluation entrypoints."""
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> ModelForwardOutput:
         base_out = self.base_model.forward_backbone(input_ids=input_ids, attention_mask=attention_mask)
         if self.refiner is None:
             refined = base_out.hidden_states
-            per_step = []
+            per_step: list[torch.Tensor] = []
         else:
-            refiner_out = self.refiner.forward(base_out.hidden_states)
+            refiner_out = self.refiner(base_out.hidden_states)
             refined = refiner_out.refined_hidden_states
             per_step = refiner_out.per_step_hidden_states
 

@@ -27,9 +27,9 @@ The latent refiner path is configurable for:
 
 ## Current status
 
-This version is implementation-oriented scaffold code:
+This version now provides a minimal trainable baseline core:
 - baseline definitions and config semantics,
-- model composition and forward smoke path,
+- model composition with torch modules and trainability smoke path,
 - config parsing and baseline selection,
 - run metadata plumbing and lightweight tests.
 

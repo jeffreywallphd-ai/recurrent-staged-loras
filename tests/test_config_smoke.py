@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from training.baseline_selector import select_baseline
-from training.config_loader import load_experiment_config
+from training.config_loader import build_model_from_variant, load_experiment_config
 from models.config import parse_variant_config
 
 
@@ -32,7 +32,12 @@ def test_all_baseline_configs_load_and_validate_selection() -> None:
     for config_name in config_names:
         cfg = load_experiment_config(config_dir / config_name)
         assert select_baseline(cfg) == cfg["baseline"]
-        parse_variant_config(cfg)
+        variant = parse_variant_config(cfg)
+        model = build_model_from_variant(variant)
+        if cfg["baseline"] == "standard_lora":
+            assert model.base_model.standard_lora_enabled is True
+        if cfg["baseline"] == "base":
+            assert model.base_model.standard_lora_enabled is False
 
 
 def test_latent_refiner_only_uses_explicit_non_adapterized_mode() -> None:
