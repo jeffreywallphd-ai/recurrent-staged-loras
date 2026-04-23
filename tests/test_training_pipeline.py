@@ -11,7 +11,7 @@ from models.config import parse_variant_config
 from training.config_loader import RuntimeConfig, TrainingConfig
 from training.engine import build_training_components, run_training_loop
 from training.loop import evaluate, run_training
-from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, RUN_METRICS_FIELDS
+from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 
 
 def _runtime(tmp_path: Path, baseline: str = "stage_specialized_recurrence") -> RuntimeConfig:
@@ -99,6 +99,7 @@ def test_interval_eval_runs_at_step_cadence() -> None:
             "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
             "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
             "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "final_answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
             "answer_text": "3 4",
             "answer_text_normalized": "3 4",
             "answer_numeric_normalized": "3.0",
@@ -130,6 +131,7 @@ def test_answer_metrics_are_not_stage3_token_proxy() -> None:
             "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
             "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
             "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "final_answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
             "answer_text": "999 999",
             "answer_text_normalized": "999 999",
             "answer_numeric_normalized": "999.0",
@@ -140,6 +142,53 @@ def test_answer_metrics_are_not_stage3_token_proxy() -> None:
     assert eval_result.stage_3_token_accuracy is not None
     assert eval_result.final_answer_accuracy is not None
     assert eval_result.final_answer_accuracy == 0.0
+
+
+def test_final_answer_metrics_use_answer_span_not_stage3_header() -> None:
+    class _FakeOutput:
+        def __init__(self, logits: torch.Tensor) -> None:
+            self.logits = logits
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self._training = True
+            self.config = type("Cfg", (), {"refiner": type("Ref", (), {"enabled": False})()})()
+
+        def eval(self) -> None:
+            self._training = False
+
+        def train(self) -> None:
+            self._training = True
+
+        def __call__(self, *, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> _FakeOutput:
+            del attention_mask
+            batch, seq_len = input_ids.shape
+            vocab = 32
+            logits = torch.full((batch, seq_len, vocab), -1000.0)
+            # Predict header token 0 incorrectly, but answer token 5 correctly.
+            logits[:, 0, 0] = 1000.0
+            logits[:, 1, 5] = 1000.0
+            return _FakeOutput(logits=logits)
+
+    examples = [
+        {
+            "input_ids": torch.tensor([2, 5, 0], dtype=torch.long),
+            "labels": torch.tensor([2, 5, 0], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 0, 0], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 1, 1], dtype=torch.bool),
+            "final_answer_mask": torch.tensor([0, 1, 0], dtype=torch.bool),
+            "answer_text": "5",
+            "answer_text_normalized": "5",
+            "answer_numeric_normalized": "5.0",
+        }
+    ]
+    loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
+    eval_result = evaluate(model=_FakeModel(), dataloader=loader, tokenizer=None)
+    assert eval_result.stage_3_token_accuracy == 0.5
+    assert eval_result.final_answer_accuracy == 1.0
+    assert eval_result.final_answer_exact_match == 1.0
+    assert eval_result.normalized_numeric_answer_accuracy == 1.0
 
 
 def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: Path) -> None:
@@ -182,6 +231,8 @@ def test_metrics_schema_matches_docs() -> None:
     docs = Path("docs/experiments.md").read_text(encoding="utf-8")
     for field in RUN_METRICS_FIELDS:
         assert field in docs
+    assert "answer_span_normalized_accuracy" in docs
+    assert "answer_eval_skipped_no_answer_span" in docs
 
 
 def test_pilot_and_study_do_not_collapse_in_aggregate_grouping(tmp_path: Path) -> None:
@@ -234,3 +285,32 @@ def test_answer_metric_definitions_documented_as_distinct() -> None:
     assert "final_answer_accuracy" in docs
     assert "final_answer_exact_match" in docs
     assert "strict raw-string equality" in docs
+    assert "final_answer_mask" in docs
+
+
+def test_report_table_has_paper_facing_columns(tmp_path: Path) -> None:
+    cfg = _tiny_config(tmp_path, name="report.json")
+    subprocess.run(
+        [sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg), "--seeds", "1", "--preset-scope", "all"],
+        check=True,
+    )
+    import csv
+
+    with Path("outputs/report_table.csv").open("r", encoding="utf-8", newline="") as fp:
+        rows = list(csv.DictReader(fp))
+    assert rows
+    assert set(REPORT_TABLE_FIELDS).issubset(set(rows[0].keys()))
+    row_types = {r["row_type"] for r in rows}
+    assert "run" in row_types and "aggregate" in row_types
+
+
+def test_aggregates_include_stage_token_metrics(tmp_path: Path) -> None:
+    cfg = _tiny_config(tmp_path, name="agg.json")
+    subprocess.run(
+        [sys.executable, "scripts/run_all_experiments.py", "--configs", str(cfg), "--seeds", "1", "2", "--preset-scope", "all"],
+        check=True,
+    )
+    aggregates = json.loads(Path("outputs/aggregates.json").read_text())
+    metrics = aggregates[0]["metrics"]
+    assert "stage_2_token_accuracy" in metrics
+    assert "stage_3_token_accuracy" in metrics

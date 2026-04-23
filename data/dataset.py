@@ -46,12 +46,20 @@ def _extract_reasoning_and_answer(response: str) -> tuple[str, str]:
     return response.strip(), ""
 
 
-def _build_staged_text(problem: str, reasoning: str, final_answer: str) -> tuple[str, tuple[int, int], tuple[int, int], tuple[int, int]]:
+def _build_staged_text(
+    problem: str, reasoning: str, final_answer: str
+) -> tuple[str, tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]:
     s1 = f"Problem:\n{problem.strip()}\n\n"
     s2 = f"Reasoning:\n{reasoning.strip()}\n\n" if reasoning else "Reasoning:\n\n"
-    s3 = f"Final Answer:\n{final_answer.strip()}" if final_answer else "Final Answer:\n"
+    final_answer_prefix = "Final Answer:\n"
+    s3 = f"{final_answer_prefix}{final_answer.strip()}" if final_answer else final_answer_prefix
     full = s1 + s2 + s3
-    return full, (0, len(s1)), (len(s1), len(s1) + len(s2)), (len(s1) + len(s2), len(full))
+    stage1_span = (0, len(s1))
+    stage2_span = (len(s1), len(s1) + len(s2))
+    stage3_span = (len(s1) + len(s2), len(full))
+    answer_span_start = stage3_span[0] + len(final_answer_prefix)
+    answer_span = (answer_span_start, len(full))
+    return full, stage1_span, stage2_span, stage3_span, answer_span
 
 
 def _char_spans_to_token_mask(offset_mapping: list[tuple[int, int]], span: tuple[int, int]) -> torch.Tensor:
@@ -106,7 +114,7 @@ def build_staged_examples_from_hf(
             continue
 
         reasoning, answer = _extract_reasoning_and_answer(response)
-        staged_text, stage1_span, stage2_span, stage3_span = _build_staged_text(problem, reasoning, answer)
+        staged_text, stage1_span, stage2_span, stage3_span, answer_span = _build_staged_text(problem, reasoning, answer)
 
         tok = tokenizer(
             staged_text,
@@ -120,9 +128,11 @@ def build_staged_examples_from_hf(
         stage1_mask = _char_spans_to_token_mask(offsets, stage1_span)
         stage2_mask = _char_spans_to_token_mask(offsets, stage2_span)
         stage3_mask = _char_spans_to_token_mask(offsets, stage3_span)
+        final_answer_mask = _char_spans_to_token_mask(offsets, answer_span)
 
         stage2_mask = stage2_mask & ~stage3_mask
         stage1_mask = stage1_mask & ~stage2_mask & ~stage3_mask
+        final_answer_mask = final_answer_mask & stage3_mask
 
         if int(stage3_mask.sum().item()) == 0:
             filtered_missing_stage3 += 1
@@ -143,6 +153,7 @@ def build_staged_examples_from_hf(
                 "stage1_mask": stage1_mask,
                 "stage2_mask": stage2_mask,
                 "stage3_mask": stage3_mask,
+                "final_answer_mask": final_answer_mask,
                 "answer_text": final_answer_text,
                 "answer_text_normalized": final_answer_text.lower().strip(),
                 "answer_numeric_normalized": normalized_numeric_answer or "",
@@ -184,6 +195,7 @@ def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: 
                 "stage1_mask": s1,
                 "stage2_mask": s2,
                 "stage3_mask": s3,
+                "final_answer_mask": s3.clone(),
                 "answer_text": "7",
                 "answer_text_normalized": "7",
                 "answer_numeric_normalized": "7.0",
@@ -194,6 +206,7 @@ def build_test_examples(*, num_examples: int, sequence_length: int, vocab_size: 
 
 def collate_token_sequences(batch: list[Example], *, pad_token_id: int) -> dict[str, torch.Tensor | list[str]]:
     max_len = max(int(item["input_ids"].shape[0]) for item in batch)
+    lengths = [int(item["input_ids"].shape[0]) for item in batch]
 
     def _pad_1d(x: torch.Tensor, pad_val: int = 0) -> torch.Tensor:
         if x.shape[0] == max_len:
@@ -203,10 +216,12 @@ def collate_token_sequences(batch: list[Example], *, pad_token_id: int) -> dict[
 
     input_ids = torch.stack([_pad_1d(item["input_ids"], pad_token_id) for item in batch])
     labels = torch.stack([_pad_1d(item["labels"], -100) for item in batch])
-    attention_mask = (input_ids != pad_token_id).long()
+    attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    for i, length in enumerate(lengths):
+        attention_mask[i, :length] = 1
 
     collated: dict[str, torch.Tensor | list[str]] = {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
-    for key in ("stage1_mask", "stage2_mask", "stage3_mask"):
+    for key in ("stage1_mask", "stage2_mask", "stage3_mask", "final_answer_mask"):
         collated[key] = torch.stack([_pad_1d(item[key].bool(), 0).bool() for item in batch])
 
     collated["answer_text"] = [str(item.get("answer_text", "")) for item in batch]

@@ -20,7 +20,7 @@ Multi-seed orchestration writes:
 - `outputs/summary.json` (runs + aggregates)
 - `outputs/summary.csv` (run and aggregate rows)
 - `outputs/aggregates.json` (aggregate-only artifact)
-- `outputs/report_table.csv` (paper/report-ready run + aggregate rows)
+- `outputs/report_table.csv` (canonical paper/report table source with explicit run vs aggregate row typing)
 
 ## Presets
 

@@ -80,15 +80,19 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
     for run in runs:
         report_rows.append({
             "row_type": "run",
+            "report_tier": "primary_run",
             "run_name": run.get("run_name"),
             "config_name": run.get("config_name"),
             "baseline_name": run.get("baseline_name"),
+            "baseline_family": run.get("baseline_name"),
             "dataset_name": run.get("dataset_name"),
             "seed": run.get("seed"),
             "architecture_type": run.get("architecture_type"),
             "model_name": run.get("model_name"),
             "final_eval_loss": run.get("final_eval_loss"),
             "eval_perplexity": run.get("eval_perplexity"),
+            "stage_2_token_accuracy": run.get("stage_2_token_accuracy"),
+            "stage_3_token_accuracy": run.get("stage_3_token_accuracy"),
             "final_answer_accuracy": run.get("final_answer_accuracy"),
             "final_answer_exact_match": run.get("final_answer_exact_match"),
             "normalized_numeric_answer_accuracy": run.get("normalized_numeric_answer_accuracy"),
@@ -97,19 +101,38 @@ def _write_report_table(*, output_dir: Path, runs: list[dict[str, object]], aggr
             "tokens_per_second_train": run.get("tokens_per_second_train"),
         })
     for agg in aggregates:
-        for metric_name, stat in dict(agg.get("metrics", {})).items():
-            report_rows.append({
-                "row_type": "aggregate",
-                "config_name": agg.get("config_name"),
-                "baseline_name": agg.get("baseline_name"),
-                "dataset_name": agg.get("dataset_name"),
-                "architecture_type": agg.get("architecture_type"),
-                "model_name": agg.get("model_name"),
-                "num_runs": agg.get("num_runs"),
-                "metric_name": metric_name,
-                "metric_mean": stat.get("mean"),
-                "metric_std": stat.get("std"),
-            })
+        metrics = dict(agg.get("metrics", {}))
+        report_rows.append({
+            "row_type": "aggregate",
+            "report_tier": "primary_aggregate",
+            "config_name": agg.get("config_name"),
+            "baseline_name": agg.get("baseline_name"),
+            "baseline_family": agg.get("baseline_name"),
+            "dataset_name": agg.get("dataset_name"),
+            "architecture_type": agg.get("architecture_type"),
+            "model_name": agg.get("model_name"),
+            "num_runs": agg.get("num_runs"),
+            "final_eval_loss": dict(metrics.get("final_eval_loss", {})).get("mean"),
+            "final_eval_loss_std": dict(metrics.get("final_eval_loss", {})).get("std"),
+            "eval_perplexity": dict(metrics.get("eval_perplexity", {})).get("mean"),
+            "eval_perplexity_std": dict(metrics.get("eval_perplexity", {})).get("std"),
+            "stage_2_token_accuracy": dict(metrics.get("stage_2_token_accuracy", {})).get("mean"),
+            "stage_2_token_accuracy_std": dict(metrics.get("stage_2_token_accuracy", {})).get("std"),
+            "stage_3_token_accuracy": dict(metrics.get("stage_3_token_accuracy", {})).get("mean"),
+            "stage_3_token_accuracy_std": dict(metrics.get("stage_3_token_accuracy", {})).get("std"),
+            "final_answer_accuracy": dict(metrics.get("final_answer_accuracy", {})).get("mean"),
+            "final_answer_accuracy_std": dict(metrics.get("final_answer_accuracy", {})).get("std"),
+            "final_answer_exact_match": dict(metrics.get("final_answer_exact_match", {})).get("mean"),
+            "final_answer_exact_match_std": dict(metrics.get("final_answer_exact_match", {})).get("std"),
+            "normalized_numeric_answer_accuracy": dict(metrics.get("normalized_numeric_answer_accuracy", {})).get("mean"),
+            "normalized_numeric_answer_accuracy_std": dict(metrics.get("normalized_numeric_answer_accuracy", {})).get("std"),
+            "trainable_param_fraction": dict(metrics.get("trainable_param_fraction", {})).get("mean"),
+            "trainable_param_fraction_std": dict(metrics.get("trainable_param_fraction", {})).get("std"),
+            "wall_time_seconds_total": dict(metrics.get("wall_time_seconds_total", {})).get("mean"),
+            "wall_time_seconds_total_std": dict(metrics.get("wall_time_seconds_total", {})).get("std"),
+            "tokens_per_second_train": dict(metrics.get("tokens_per_second_train", {})).get("mean"),
+            "tokens_per_second_train_std": dict(metrics.get("tokens_per_second_train", {})).get("std"),
+        })
 
     with (output_dir / "report_table.csv").open("w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(fp, fieldnames=REPORT_TABLE_FIELDS)
