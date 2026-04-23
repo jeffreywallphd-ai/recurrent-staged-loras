@@ -40,6 +40,32 @@ class RecurrentLatentRefiner(nn.Module):
         self.w_out = nn.Linear(hidden_size, hidden_size)
         self.activation = nn.Tanh()
         self.step_scale = 0.5
+        self._runtime_aligned = False
+
+    def align_to_hidden_states(self, hidden_states: torch.Tensor) -> None:
+        """Align refiner/adapters to hidden-state dtype+device once if needed."""
+        ref_param = next(self.w_in.parameters())
+        if ref_param.dtype == hidden_states.dtype and ref_param.device == hidden_states.device:
+            return
+        self.to(device=hidden_states.device, dtype=hidden_states.dtype)
+        self._runtime_aligned = True
+
+    def _assert_or_align_runtime(self, hidden_states: torch.Tensor) -> None:
+        ref_param = next(self.w_in.parameters())
+        if ref_param.dtype == hidden_states.dtype and ref_param.device == hidden_states.device:
+            return
+        if not self._runtime_aligned:
+            self.align_to_hidden_states(hidden_states)
+            ref_param = next(self.w_in.parameters())
+            if ref_param.dtype == hidden_states.dtype and ref_param.device == hidden_states.device:
+                return
+        raise RuntimeError(
+            "Recurrent refiner dtype/device mismatch: "
+            f"hidden_states=({hidden_states.dtype}, {hidden_states.device}) vs "
+            f"refiner=({ref_param.dtype}, {ref_param.device}). "
+            "Likely model-construction alignment was skipped; align refiner/adapters to "
+            "the backbone runtime dtype/device in training.config_loader.build_model_from_variant."
+        )
 
     def step(self, hidden_states: torch.Tensor, step_idx: int) -> torch.Tensor:
         """Apply one recurrent latent update step."""
@@ -49,6 +75,7 @@ class RecurrentLatentRefiner(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> RefinerOutput:
         """Run configured recurrent steps and collect per-step hidden states."""
+        self._assert_or_align_runtime(hidden_states)
         current = hidden_states
         history: list[torch.Tensor] = []
         for step_idx in range(self.num_steps):
