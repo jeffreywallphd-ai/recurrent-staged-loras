@@ -186,3 +186,25 @@ class FrozenBaseCausalLM(nn.Module):
             raise RuntimeError("HF backend missing")
         param = next(self.hf_model.lm_head.parameters())
         return param.dtype, param.device
+
+    @property
+    def input_device(self) -> torch.device:
+        """Best-effort device where token indices should be placed.
+
+        DataLoader tensors are created on CPU by default. For Hugging Face models
+        loaded with `device_map="auto"`, embeddings can live on a specific shard
+        device, so inputs must target that embedding/input module device.
+        """
+        if self.internal_model is not None:
+            return self.internal_model.embed_tokens.weight.device
+        if self.hf_model is None:
+            raise RuntimeError("HF backend missing")
+
+        get_input_embeddings = getattr(self.hf_model, "get_input_embeddings", None)
+        if callable(get_input_embeddings):
+            embeddings = get_input_embeddings()
+            if embeddings is not None and hasattr(embeddings, "weight"):
+                return embeddings.weight.device
+
+        # Fallback for models that do not expose input embeddings.
+        return next(self.hf_model.parameters()).device

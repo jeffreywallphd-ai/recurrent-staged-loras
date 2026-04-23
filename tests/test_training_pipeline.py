@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
@@ -10,7 +11,7 @@ from data.dataset import SequenceDataset, collate_token_sequences
 from models.config import parse_variant_config
 from training.config_loader import RuntimeConfig, TrainingConfig, load_runtime_config_from_raw
 from training.engine import build_training_components, run_training_loop
-from training.loop import evaluate, run_training
+from training.loop import _decode_answer_tokens, evaluate, move_batch_to_device, run_training
 from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 from scripts.run_all_experiments import _build_ablation_runs
 
@@ -99,6 +100,34 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
     diagnostics = json.loads(diagnostics_path.read_text())
     assert diagnostics["numeric_multi_value_rule"] == "strict_set"
     assert "symbolic_eval_attempt_count" in diagnostics
+
+
+def test_move_batch_to_device_moves_tensors_and_preserves_metadata() -> None:
+    batch = {
+        "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+        "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+        "labels": torch.tensor([[1, 2, 3]], dtype=torch.long),
+        "stage1_mask": torch.tensor([[1, 0, 0]], dtype=torch.bool),
+        "stage2_mask": torch.tensor([[0, 1, 0]], dtype=torch.bool),
+        "stage3_mask": torch.tensor([[0, 0, 1]], dtype=torch.bool),
+        "answer_mask": torch.tensor([[0, 0, 1]], dtype=torch.bool),
+        "final_answer_mask": torch.tensor([[0, 0, 1]], dtype=torch.bool),
+        "answer_text": ["3"],
+    }
+    moved = move_batch_to_device(batch, torch.device("cpu"))
+    assert moved is not batch
+    assert moved["answer_text"] is batch["answer_text"]
+    for key in ("input_ids", "attention_mask", "labels", "stage1_mask", "stage2_mask", "stage3_mask", "answer_mask", "final_answer_mask"):
+        assert isinstance(moved[key], torch.Tensor)
+        assert moved[key].device.type == "cpu"
+
+
+def test_decode_answer_tokens_supports_cuda_tensor() -> None:
+    tokens = torch.tensor([4, 5, 6], dtype=torch.long)
+    if torch.cuda.is_available():
+        tokens = tokens.to("cuda")
+    decoded = _decode_answer_tokens(tokens, tokenizer=None)
+    assert decoded == "4 5 6"
 
 
 def test_interval_eval_runs_at_step_cadence() -> None:
@@ -243,6 +272,58 @@ def test_final_answer_metrics_fail_when_answer_text_differs() -> None:
     assert eval_result.final_answer_accuracy == 0.0
     assert eval_result.final_answer_exact_match == 0.0
     assert eval_result.normalized_numeric_answer_accuracy == 0.0
+
+
+def test_train_and_evaluate_move_batch_to_model_input_device() -> None:
+    class _Out:
+        def __init__(self, logits: torch.Tensor) -> None:
+            self.logits = logits
+            self.extras = {"per_step": []}
+
+    class _Tiny(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = type("Cfg", (), {"refiner": type("Ref", (), {"enabled": False})()})()
+            self.base_model = type("Base", (), {"input_device": torch.device("cpu"), "model_name": "test/tiny"})()
+            self.calls = 0
+
+        def forward(self, *, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> _Out:
+            assert input_ids.device.type == "cpu"
+            assert attention_mask.device.type == "cpu"
+            self.calls += 1
+            batch, seq = input_ids.shape
+            vocab = 16
+            logits = torch.zeros(batch, seq, vocab, device=input_ids.device)
+            logits[..., 0] = 1.0
+            return _Out(logits)
+
+    examples = [
+        {
+            "input_ids": torch.tensor([1, 2, 3, 4], dtype=torch.long),
+            "labels": torch.tensor([1, 2, 3, 4], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_text": "3 4",
+            "answer_text_normalized": "3 4",
+        }
+        for _ in range(2)
+    ]
+    loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
+    model = _Tiny()
+    run_training(model=model, train_loader=loader, eval_loader=loader, optimizer=None, num_epochs=1, max_steps=1, eval_interval_steps=0, eval_enabled=True)
+    evaluate(model=model, dataloader=loader, tokenizer=None)
+    assert model.calls >= 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_move_batch_to_device_supports_cuda() -> None:
+    batch = {"input_ids": torch.tensor([[1, 2]], dtype=torch.long), "answer_text": ["x"]}
+    moved = move_batch_to_device(batch, torch.device("cuda"))
+    assert isinstance(moved["input_ids"], torch.Tensor)
+    assert moved["input_ids"].device.type == "cuda"
+    assert moved["answer_text"] == ["x"]
 
 
 def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: Path) -> None:

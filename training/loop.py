@@ -83,10 +83,54 @@ def _masked_ce(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -
 
 
 def _decode_answer_tokens(token_ids: torch.Tensor, tokenizer: Any | None) -> str:
-    ids = [int(x) for x in token_ids.tolist()]
+    # CUDA tensors cannot be converted to Python lists directly in all paths.
+    ids = [int(x) for x in token_ids.detach().cpu().tolist()]
     if tokenizer is not None:
         return str(tokenizer.decode(ids, skip_special_tokens=True)).strip()
     return " ".join(str(x) for x in ids).strip()
+
+
+def move_batch_to_device(
+    batch: dict[str, torch.Tensor | list[str]],
+    device: torch.device,
+) -> dict[str, torch.Tensor | list[str]]:
+    """Return a batch copy with all tensors moved to `device`.
+
+    DataLoader batches are CPU tensors by default; model backbones may run on
+    GPU or sharded HF device maps, so input tensors must be moved explicitly.
+    Non-tensor metadata (e.g. answer strings) is preserved unchanged.
+    """
+    moved: dict[str, torch.Tensor | list[str]] = {}
+    for key, value in batch.items():
+        moved[key] = value.to(device=device) if isinstance(value, torch.Tensor) else value
+    return moved
+
+
+def _resolve_input_device(model: StagedLatentAdaptationModel) -> torch.device:
+    input_device = getattr(getattr(model, "base_model", None), "input_device", None)
+    if isinstance(input_device, torch.device):
+        return input_device
+    try:
+        return next(model.parameters()).device
+    except StopIteration as exc:  # pragma: no cover - defensive only
+        raise RuntimeError("Unable to resolve model input device: model has no parameters.") from exc
+
+
+def _validate_batch_input_device(
+    *,
+    batch: dict[str, torch.Tensor | list[str]],
+    expected_device: torch.device,
+    model: StagedLatentAdaptationModel,
+) -> None:
+    input_ids = batch.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        return
+    if input_ids.device != expected_device:
+        model_name = getattr(getattr(model, "base_model", None), "model_name", "unknown_model")
+        raise RuntimeError(
+            "Batch input device mismatch before forward pass: "
+            f"input_ids device={input_ids.device}, expected device={expected_device}, model={model_name}"
+        )
 
 
 def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Tensor | list[str]]) -> torch.Tensor:
@@ -147,6 +191,7 @@ def train_epoch(
     tokens_seen = 0
     wall = 0.0
     interval_results: list[EvalResult] = []
+    input_device = _resolve_input_device(model)
 
     for batch in dataloader:
         if step >= max_steps:
@@ -156,6 +201,8 @@ def train_epoch(
         if max_wall_time_seconds is not None and wall >= max_wall_time_seconds:
             break
         start = perf_counter()
+        batch = move_batch_to_device(batch, input_device)
+        _validate_batch_input_device(batch=batch, expected_device=input_device, model=model)
         labels = batch["labels"][:, 1:]
         assert isinstance(labels, torch.Tensor)
         tokens_seen += int(labels.ne(-100).sum().item())
@@ -215,9 +262,12 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     skipped_no_answer_span = 0
     skipped_missing_answer_text = 0
     skipped_missing_numeric_target = 0
+    input_device = _resolve_input_device(model)
 
     with torch.no_grad():
         for batch in dataloader:
+            batch = move_batch_to_device(batch, input_device)
+            _validate_batch_input_device(batch=batch, expected_device=input_device, model=model)
             input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
             labels = batch["labels"][:, 1:]
