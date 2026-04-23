@@ -21,7 +21,7 @@ This version focuses on a minimal trainable baseline implementation:
 - configuration templates and typed parsing,
 - lightweight forward/loss/backward smoke tests and reproducibility metadata.
 
-It intentionally does **not** include full training-loop sophistication or production LoRA backend integration yet.
+It now includes a minimal local training/data/checkpoint pipeline for controlled baseline runs, while still deferring production training infrastructure and production LoRA backend integration.
 
 ## Reading order
 

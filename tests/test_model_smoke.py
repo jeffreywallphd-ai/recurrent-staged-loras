@@ -1,4 +1,4 @@
-"""Model-path smoke tests for trainable baseline variants."""
+"""Model-path smoke tests for baseline trainability ownership."""
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from training.config_loader import build_model_from_variant, load_variant_config
 
 
-def _forward_loss_backward(config_name: str) -> tuple[object, object]:
+def _forward_loss_backward(config_name: str) -> tuple[object, set[str]]:
     variant = load_variant_config(Path("experiments/configs") / config_name)
     model = build_model_from_variant(variant)
     model.train()
@@ -24,50 +24,65 @@ def _forward_loss_backward(config_name: str) -> tuple[object, object]:
     assert len(out.extras["per_step"]) == expected_steps
 
     loss = F.cross_entropy(out.logits[:, :-1, :].reshape(-1, model.base_model.vocab_size), input_ids[:, 1:].reshape(-1))
-    loss.backward()
+    if any(param.requires_grad for param in model.parameters()):
+        loss.backward()
 
-    grad_param_names = {
-        name
-        for name, param in model.named_parameters()
-        if param.requires_grad and param.grad is not None
-    }
-    assert grad_param_names
+    grad_param_names = {name for name, param in model.named_parameters() if param.requires_grad and param.grad is not None}
     return model, grad_param_names
 
 
-def test_base_forward_loss_backward_smoke() -> None:
+def _assert_internal_base_is_frozen(model: object) -> None:
+    internal = model.base_model.internal_model
+    assert internal is not None
+    for name, param in internal.named_parameters():
+        if "lora_" in name:
+            continue
+        assert param.requires_grad is False, f"expected frozen base param: {name}"
+
+
+def test_base_forward_loss_backward_smoke_and_frozen_ownership() -> None:
     model, grad_names = _forward_loss_backward("base.json")
     assert model.refiner is None
     assert model.base_model.standard_lora_enabled is False
-    assert not any("lora" in name for name in grad_names)
+    _assert_internal_base_is_frozen(model)
+    assert not grad_names
 
 
-def test_standard_lora_forward_loss_backward_smoke() -> None:
+def test_standard_lora_forward_loss_backward_smoke_and_ownership() -> None:
     model, grad_names = _forward_loss_backward("standard_lora.json")
     assert model.refiner is None
     assert model.base_model.standard_lora_enabled is True
-    assert any("lora" in name for name in grad_names)
+    _assert_internal_base_is_frozen(model)
+    assert grad_names
+    assert all("lora_" in name for name in grad_names)
 
 
-def test_latent_refiner_only_forward_loss_backward_smoke() -> None:
+def test_latent_refiner_only_forward_loss_backward_smoke_and_ownership() -> None:
     model, grad_names = _forward_loss_backward("latent_refiner_only.json")
     assert model.refiner is not None
     assert model.base_model.standard_lora_enabled is False
-    assert any(name.startswith("refiner.") for name in grad_names)
+    _assert_internal_base_is_frozen(model)
+    assert grad_names
+    assert all(name.startswith("refiner.") for name in grad_names)
     assert not any("adapter_bank" in name for name in grad_names)
 
 
-def test_shared_recurrence_forward_loss_backward_smoke() -> None:
+def test_shared_recurrence_forward_loss_backward_smoke_and_ownership() -> None:
     model, grad_names = _forward_loss_backward("shared_recurrence.json")
     assert model.refiner is not None
     assert model.refiner.adapter_bank is not None
     assert len(model.refiner.adapter_bank.adapters) == 1
-    assert any("adapter_bank" in name for name in grad_names)
+    _assert_internal_base_is_frozen(model)
+    assert any(name.startswith("refiner.") for name in grad_names)
+    assert any("adapter_bank.adapters.0" in name for name in grad_names)
 
 
-def test_stage_specialized_recurrence_forward_loss_backward_smoke() -> None:
+def test_stage_specialized_recurrence_forward_loss_backward_smoke_and_ownership() -> None:
     model, grad_names = _forward_loss_backward("stage_specialized_recurrence.json")
     assert model.refiner is not None
     assert model.refiner.adapter_bank is not None
     assert len(model.refiner.adapter_bank.adapters) == model.config.refiner.num_steps
+    _assert_internal_base_is_frozen(model)
+    assert any(name.startswith("refiner.") for name in grad_names)
     assert any("adapter_bank.adapters.0" in name for name in grad_names)
+    assert any("adapter_bank.adapters.1" in name for name in grad_names)

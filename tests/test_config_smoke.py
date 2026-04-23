@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from training.baseline_selector import select_baseline
-from training.config_loader import build_model_from_variant, load_experiment_config
+from training.config_loader import build_model_from_variant, load_experiment_config, load_runtime_config
 from models.config import parse_variant_config
 
 
@@ -38,6 +38,14 @@ def test_all_baseline_configs_load_and_validate_selection() -> None:
             assert model.base_model.standard_lora_enabled is True
         if cfg["baseline"] == "base":
             assert model.base_model.standard_lora_enabled is False
+
+
+def test_runtime_config_parses_training_and_dataset_fields() -> None:
+    runtime = load_runtime_config(Path("experiments/configs/standard_lora.json"))
+    assert runtime.training.batch_size > 0
+    assert runtime.training.max_steps > 0
+    assert runtime.dataset["name"] == "synthetic_integer_sequences"
+    assert "dir" in runtime.output
 
 
 def test_latent_refiner_only_uses_explicit_non_adapterized_mode() -> None:

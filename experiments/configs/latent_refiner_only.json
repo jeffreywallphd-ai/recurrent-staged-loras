@@ -17,7 +17,23 @@
     ]
   },
   "dataset": {
-    "name": "placeholder_dataset"
+    "name": "synthetic_integer_sequences",
+    "settings": {
+      "num_examples": 32,
+      "sequence_length": 10,
+      "eval_fraction": 0.25,
+      "seed": 13
+    }
+  },
+  "training": {
+    "batch_size": 4,
+    "num_epochs": 1,
+    "max_steps": 4,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0,
+    "seed": 13,
+    "eval_interval_steps": 2,
+    "checkpoint_interval_steps": 2
   },
   "output": {
     "dir": "outputs/latent_refiner_only"
