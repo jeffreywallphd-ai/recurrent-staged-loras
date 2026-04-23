@@ -1,46 +1,69 @@
-# Experiment Plan (Initial)
+# Experiment Workflow
 
 ## Objective
 
-Run a controlled comparison of latent adaptation strategies under the same frozen base model setup.
+Run controlled baseline comparisons with standardized metrics and reproducible outputs.
 
-## Initial experiment matrix
+## Dataset modes
 
-| Baseline | Config file | Recurrence | Adapter scheme | Base frozen |
-|---|---|---|---|---|
-| Base | `experiments/configs/base.json` | No | None | Yes |
-| Standard LoRA | `experiments/configs/standard_lora.json` | No | standard LoRA | Yes |
-| Latent refiner only | `experiments/configs/latent_refiner_only.json` | Yes (`recurrence_mode=latent_only`) | None | Yes |
-| Shared recurrence | `experiments/configs/shared_recurrence.json` | Yes (`recurrence_mode=shared`) | one shared recurrence adapter (`adapter_sharing=shared`) | Yes |
-| Stage-specialized recurrence | `experiments/configs/stage_specialized_recurrence.json` | Yes (`recurrence_mode=stage_specialized`) | per-step adapters (`adapter_sharing=per_step`) | Yes |
+Supported local dataset modes:
+- `synthetic_integer_sequences`
+- `text_style_patterns`
+- `structured_sequence`
 
-## Minimum controlled variables
+All modes emit labeled examples (`input_ids`, `labels`) using next-token prediction labels.
 
-Across the matrix, keep fixed where feasible:
+## Reproducibility protocol
 
-- base model checkpoint,
-- tokenizer and prompt formatting,
-- dataset versions and splits,
-- training budget definition (tokens/steps/epochs),
-- evaluation metrics and scripts,
-- random seed protocol and number of repeats.
+Training config supports:
+- `seed` for Python random + PyTorch + dataset generation
+- `deterministic` for deterministic PyTorch algorithm preference
 
-## Minimum success criteria for scaffold stage
+Notes:
+- Deterministic settings may reduce performance and can still vary across hardware/backends.
 
-1. Each baseline config loads successfully.
-2. Baseline selector routes each config to the intended variant.
-3. Training entrypoint can run a tiny end-to-end train/eval loop with synthetic integer-sequence data.
-4. Training entrypoint writes run metadata, parsed-config snapshot, metrics summary, and a model checkpoint for reproducibility.
+## Training + evaluation
 
-## Failure criteria (scaffold stage)
+The training loop computes:
+- train loss during training
+- evaluation loss at end of training
+- optional interval evaluation during training (`eval_interval_steps` + `eval_enabled`)
 
-- Baseline names/config semantics are ambiguous or inconsistent.
-- Terminology drifts between latent-refiner-only recurrence and adapterized recurrence modes.
-- The architecture path is unclear about placement of the latent refiner.
-- Integrating full training internals would require major reorganization.
+## Required run artifacts
 
-## Out of scope for this initial version
+Each run produces:
+- `config.json`
+- `metadata.json`
+- `metrics.json`
+- `checkpoint.pt`
 
-- Full optimizer/scheduler implementation beyond minimal deterministic baseline loop.
-- Production-grade backend integration for LoRA libraries.
-- Full benchmark claims beyond smoke-level wiring checks.
+`metrics.json` includes:
+- `baseline_name`
+- `train_loss`
+- `eval_loss` (if enabled)
+- `num_steps`
+- `num_epochs`
+
+## Running one experiment
+
+```bash
+python -m training.train --config experiments/configs/standard_lora.json --run-name run01
+```
+
+## Running many experiments
+
+```bash
+python scripts/run_all_experiments.py --config-dir experiments/configs
+```
+
+This writes per-baseline runs under `output/<baseline>/<config_stem>/` and aggregates to `output/summary.json`.
+
+## Comparison process
+
+For quick terminal comparisons:
+
+```bash
+python scripts/compare_metrics.py output/base/base/metrics.json output/standard_lora/standard_lora/metrics.json
+```
+
+This prints a compact table over baseline name and key metric fields.

@@ -31,20 +31,20 @@ This version provides a minimal reproducible experiment harness:
 - baseline definitions and config semantics,
 - model composition with torch modules and trainability checks,
 - reusable training engine + loop primitives,
-- dataset abstraction with deterministic local modes (`synthetic_integer_sequences`, `text_style_patterns`),
+- dataset abstraction with deterministic local modes (`synthetic_integer_sequences`, `text_style_patterns`, `structured_sequence`),
 - deterministic run artifacts (`config.json`, `metadata.json`, `metrics.json`, `checkpoint.pt`).
 
-Latent cache behavior is explicitly disabled for now and reserved as future work.
+Latent caching is deferred to future work and is intentionally disabled in the active training path.
 
 ## Running experiments
 
-Run a config with:
+### Run a single config
 
 ```bash
 python -m training.train --config experiments/configs/standard_lora.json --run-name smoke_standard_lora
 ```
 
-Output structure is standardized as:
+Output structure for single runs:
 
 ```text
 outputs/<baseline>/<run_name>/
@@ -54,7 +54,40 @@ outputs/<baseline>/<run_name>/
   checkpoint.pt
 ```
 
-`metrics.json` includes `train_loss`, `eval_loss`, and step/epoch counts for quick run validation.
+### Run multiple configs
+
+```bash
+python scripts/run_all_experiments.py --config-dir experiments/configs
+# or
+python scripts/run_all_experiments.py --configs experiments/configs/base.json experiments/configs/standard_lora.json
+```
+
+Output structure for multi-run mode:
+
+```text
+output/<baseline>/<config_stem>/
+  config.json
+  metadata.json
+  metrics.json
+  checkpoint.pt
+
+output/summary.json
+```
+
+### Compare metrics from runs
+
+```bash
+python scripts/compare_metrics.py output/base/base/metrics.json output/standard_lora/standard_lora/metrics.json
+```
+
+`metrics.json` includes:
+- `baseline_name`
+- `train_loss`
+- `eval_loss` (if eval enabled)
+- `num_steps`
+- `num_epochs`
+
+Use `output/summary.json` as the baseline-to-metrics map for quick comparisons.
 
 ## Reading order
 

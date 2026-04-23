@@ -49,6 +49,8 @@ class TrainingConfig:
     seed: int = 0
     eval_interval_steps: int = 4
     checkpoint_interval_steps: int = 4
+    eval_enabled: bool = True
+    deterministic: bool = False
 
 
 @dataclass(slots=True)
@@ -100,6 +102,8 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
         seed=int(training_raw.get("seed", 0)),
         eval_interval_steps=int(training_raw.get("eval_interval_steps", 4)),
         checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 4)),
+        eval_enabled=bool(training_raw.get("eval_enabled", True)),
+        deterministic=bool(training_raw.get("deterministic", False)),
     )
 
     return RuntimeConfig(
