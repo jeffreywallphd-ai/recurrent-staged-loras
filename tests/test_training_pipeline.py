@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from data.dataset import SequenceDataset, collate_token_sequences
 from models.config import parse_variant_config
 from training.config_loader import PublishConfig, RuntimeConfig, TrainingConfig, load_runtime_config_from_raw
+from training.model_validation import ModelValidationConfig
 from training.engine import build_training_components, run_training_loop
 from training.loop import _decode_answer_tokens, evaluate, move_batch_to_device, run_training
 from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
@@ -51,6 +52,7 @@ def _runtime(tmp_path: Path, baseline: str = "stage_specialized_recurrence") -> 
         variant=variant,
         training=TrainingConfig(batch_size=2, max_steps=3, num_epochs=1, eval_interval_steps=1, eval_enabled=True),
         publish=PublishConfig(),
+        validation=ModelValidationConfig(enabled=False),
         dataset={"name": "test_synthetic_stage_dataset", "settings": {"subset_size": 12, "sequence_length": 9, "eval_fraction": 0.25, "seed": 7}},
         output={"dir": str(tmp_path)},
         raw={},
