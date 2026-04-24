@@ -463,7 +463,6 @@ def _split_counts(total_examples: int, eval_fraction: float) -> tuple[int, int]:
 
 def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: int, tokenizer: Any | None = None) -> DatasetBundle:
     """Build primary train/eval datasets and preprocessing summary metadata."""
-    del vocab_size
     total_examples = int(settings.get("subset_size", 25_000))
     eval_fraction = float(settings.get("eval_fraction", 0.1))
     seed = int(settings.get("seed", 0))
@@ -471,8 +470,9 @@ def build_train_eval_datasets(name: str, settings: dict[str, Any], vocab_size: i
 
     if name == "test_synthetic_stage_dataset":
         seq_len = int(settings.get("sequence_length", 12))
-        train = build_test_examples(num_examples=train_count, sequence_length=seq_len, vocab_size=512, seed=seed)
-        evalv = build_test_examples(num_examples=eval_count, sequence_length=seq_len, vocab_size=512, seed=seed + 1)
+        effective_vocab_size = max(8, int(vocab_size))
+        train = build_test_examples(num_examples=train_count, sequence_length=seq_len, vocab_size=effective_vocab_size, seed=seed)
+        evalv = build_test_examples(num_examples=eval_count, sequence_length=seq_len, vocab_size=effective_vocab_size, seed=seed + 1)
         summary = {
             "raw_selected_examples": total_examples,
             "kept_examples": total_examples,

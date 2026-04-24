@@ -19,6 +19,7 @@ from typing import Any
 from pathlib import Path
 import json
 import random
+import hashlib
 
 import torch
 from torch.utils.data import DataLoader
@@ -30,6 +31,7 @@ from training.config_loader import RuntimeConfig, build_model_from_variant
 from training.latent_cache import LATENT_CACHE_STATUS
 from training.loop import evaluate, run_training
 from training.run_metadata import RunMetadata
+from publish.huggingface_export import publish_run_directory
 
 
 @dataclass(slots=True)
@@ -75,6 +77,60 @@ def _count_trainable_params(model: torch.nn.Module) -> int:
 
 def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
+
+
+def _stable_hash(payload: object) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _token_count(value: Any) -> int:
+    if isinstance(value, torch.Tensor):
+        return int(value.sum().item())
+    return 0
+
+
+def _example_partition_row(example: dict[str, Any], *, split: str, index: int) -> dict[str, Any]:
+    source_signature = str(example.get("source_signature", ""))
+    answer_text = str(example.get("answer_text", ""))
+    answer_text_normalized = str(example.get("answer_text_normalized", ""))
+    stage_meta = {
+        "stage1_tokens": _token_count(example.get("stage1_mask")),
+        "stage2_tokens": _token_count(example.get("stage2_mask")),
+        "stage3_tokens": _token_count(example.get("stage3_mask")),
+        "answer_tokens": _token_count(example.get("answer_mask")),
+    }
+    payload = {
+        "split": split,
+        "index": index,
+        "source_signature": source_signature,
+        "answer_text": answer_text,
+        "answer_text_normalized": answer_text_normalized,
+        "stage_token_counts": stage_meta,
+    }
+    payload["sample_id"] = f"{split}-{index}"
+    payload["sample_hash"] = _stable_hash(payload)
+    return payload
+
+
+def _write_dataset_partitions_artifact(*, out_dir: Path, components: TrainingComponents, runtime: RuntimeConfig) -> Path:
+    train_rows = [_example_partition_row(dict(ex), split="train", index=i) for i, ex in enumerate(components.train_loader.dataset)]
+    eval_rows = [_example_partition_row(dict(ex), split="eval", index=i) for i, ex in enumerate(components.eval_loader.dataset)]
+    payload = {
+        "source_dataset_name": runtime.dataset["name"],
+        "source_split": runtime.dataset.get("settings", {}).get("split", "train"),
+        "seed": runtime.training.seed,
+        "subset_size": runtime.dataset.get("settings", {}).get("subset_size"),
+        "preprocessing_settings": dict(runtime.dataset.get("settings", {})),
+        "preprocessing_summary": dict(components.preprocessing_summary),
+        "train_sample_count": len(train_rows),
+        "eval_sample_count": len(eval_rows),
+        "train": train_rows,
+        "eval": eval_rows,
+    }
+    path = out_dir / "dataset_partitions.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 REQUIRED_STUDY_METRICS = [
@@ -237,6 +293,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     metadata.write(path=out_dir / "metadata.json")
     (out_dir / "config.json").write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
     (out_dir / "dataset_preprocessing_summary.json").write_text(json.dumps(components.preprocessing_summary, indent=2), encoding="utf-8")
+    _write_dataset_partitions_artifact(out_dir=out_dir, components=components, runtime=runtime)
 
     base_max_steps = int(runtime.training.max_steps)
     recurrence_steps = int(runtime.variant.refiner.num_steps if runtime.variant.refiner.enabled else 1)
@@ -446,6 +503,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     if external_eval_metrics:
         answer_eval_diagnostics["external_eval"] = external_eval_metrics
     (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
+    if runtime.publish.enabled:
+        publish_run_directory(run_dir=out_dir, runtime=runtime, publish_cfg=runtime.publish)
 
     return TrainResult(
         final_train_loss=metrics["final_train_loss"],

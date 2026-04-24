@@ -203,6 +203,29 @@ For each group, mean/std are reported for:
 - `tokens_per_second_train`
 - `trainable_param_fraction`
 
+## Optional Hugging Face export/publish protocol
+
+Publishing is explicitly opt-in via config (`publish.enabled=true`) or the standalone CLI.
+No authentication tokens are read from config files; use standard Hugging Face auth (`huggingface-cli login`, `HF_TOKEN`, or local HF token cache).
+
+Config block:
+
+```json
+"publish": {
+  "enabled": false,
+  "hub_model_repo": null,
+  "hub_dataset_repo": null,
+  "private": true,
+  "commit_message": null,
+  "include_checkpoint": true,
+  "include_metrics": true,
+  "include_dataset_partitions": true
+}
+```
+
+When enabled, the run exports `dataset_partitions.json` capturing exact train/eval identities (sample IDs, hashes, stage token metadata, answer text fields, preprocessing/config metadata) and then uploads selected artifacts to the configured Hub repos.
+Publishing failures are fail-loud: if publish was explicitly enabled, the run raises an error instead of silently succeeding.
+
 ## Presets: study vs pilot
 
 - **Study presets:** base config names (for reportable runs).

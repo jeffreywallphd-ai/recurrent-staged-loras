@@ -1,5 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv
-.cache
-outputs
+.env
+.env.*
+*.env
+.cache/
+outputs/
+hf_token*
+huggingface_token*
