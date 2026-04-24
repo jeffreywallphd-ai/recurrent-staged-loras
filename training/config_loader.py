@@ -17,6 +17,11 @@ from models.frozen_base import FrozenBaseCausalLM
 from models.lora_bank import StepAwareLoRABank
 from models.recurrent_refiner import RecurrentLatentRefiner
 from models.staged_model import StagedLatentAdaptationModel
+from training.model_validation import (
+    DEFAULT_LORA_KEY_PATTERNS,
+    DEFAULT_RECURRENT_KEY_PATTERNS,
+    ModelValidationConfig,
+)
 
 SHARED_DATASET_DEFAULTS: dict[str, Any] = {
     "name": "metamath_qa",
@@ -92,6 +97,7 @@ class RuntimeConfig:
     variant: VariantConfig
     training: TrainingConfig
     publish: PublishConfig
+    validation: ModelValidationConfig
     dataset: dict[str, Any]
     output: dict[str, Any]
     raw: dict[str, Any]
@@ -102,6 +108,7 @@ class RuntimeConfig:
             "variant": asdict(self.variant),
             "training": asdict(self.training),
             "publish": asdict(self.publish),
+            "validation": asdict(self.validation),
             "dataset": self.dataset,
             "output": self.output,
             "raw": self.raw,
@@ -171,6 +178,17 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
     )
     if publish.enabled and not publish.hub_model_repo and not publish.hub_dataset_repo:
         raise ValueError("publish.enabled=true requires publish.hub_model_repo and/or publish.hub_dataset_repo")
+    validation_raw = dict(raw.get("validation", {}))
+    validation = ModelValidationConfig(
+        enabled=bool(validation_raw.get("enabled", True)),
+        blocking=bool(validation_raw.get("blocking", True)),
+        write_json_diff=bool(validation_raw.get("write_json_diff", True)),
+        lora_expected=(bool(validation_raw["lora_expected"]) if "lora_expected" in validation_raw else None),
+        recurrent_expected=(bool(validation_raw["recurrent_expected"]) if "recurrent_expected" in validation_raw else None),
+        lora_merged_before_save=bool(validation_raw.get("lora_merged_before_save", False)),
+        lora_key_patterns=list(validation_raw.get("lora_key_patterns", DEFAULT_LORA_KEY_PATTERNS)),
+        recurrent_key_patterns=list(validation_raw.get("recurrent_key_patterns", DEFAULT_RECURRENT_KEY_PATTERNS)),
+    )
 
     dataset_name = str(dataset_resolved["name"]).strip().lower()
     if dataset_name not in SUPPORTED_PRIMARY_DATASETS:
@@ -220,6 +238,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         variant=variant,
         training=training,
         publish=publish,
+        validation=validation,
         dataset=dataset_resolved,
         output={"dir": str(output_resolved["dir"])},
         raw=raw,
