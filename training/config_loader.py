@@ -75,10 +75,23 @@ class TrainingConfig:
 
 
 @dataclass(slots=True)
+class PublishConfig:
+    enabled: bool = False
+    hub_model_repo: str | None = None
+    hub_dataset_repo: str | None = None
+    private: bool = True
+    commit_message: str | None = None
+    include_checkpoint: bool = True
+    include_metrics: bool = True
+    include_dataset_partitions: bool = True
+
+
+@dataclass(slots=True)
 class RuntimeConfig:
     baseline: str
     variant: VariantConfig
     training: TrainingConfig
+    publish: PublishConfig
     dataset: dict[str, Any]
     output: dict[str, Any]
     raw: dict[str, Any]
@@ -88,6 +101,7 @@ class RuntimeConfig:
             "baseline": self.baseline,
             "variant": asdict(self.variant),
             "training": asdict(self.training),
+            "publish": asdict(self.publish),
             "dataset": self.dataset,
             "output": self.output,
             "raw": self.raw,
@@ -138,6 +152,25 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         deterministic=bool(training_raw.get("deterministic", False)),
         compute_control=compute,
     )
+    publish_raw = dict(raw.get("publish", {}))
+    forbidden_publish_keys = [k for k in publish_raw if any(token in k.lower() for token in ("token", "secret", "api_key", "apikey", "password"))]
+    if forbidden_publish_keys:
+        raise ValueError(
+            "publish config must not contain credentials/secrets. "
+            f"Remove keys: {', '.join(sorted(forbidden_publish_keys))}"
+        )
+    publish = PublishConfig(
+        enabled=bool(publish_raw.get("enabled", False)),
+        hub_model_repo=(str(publish_raw["hub_model_repo"]) if publish_raw.get("hub_model_repo") else None),
+        hub_dataset_repo=(str(publish_raw["hub_dataset_repo"]) if publish_raw.get("hub_dataset_repo") else None),
+        private=bool(publish_raw.get("private", True)),
+        commit_message=(str(publish_raw["commit_message"]) if publish_raw.get("commit_message") else None),
+        include_checkpoint=bool(publish_raw.get("include_checkpoint", True)),
+        include_metrics=bool(publish_raw.get("include_metrics", True)),
+        include_dataset_partitions=bool(publish_raw.get("include_dataset_partitions", True)),
+    )
+    if publish.enabled and not publish.hub_model_repo and not publish.hub_dataset_repo:
+        raise ValueError("publish.enabled=true requires publish.hub_model_repo and/or publish.hub_dataset_repo")
 
     dataset_name = str(dataset_resolved["name"]).strip().lower()
     if dataset_name not in SUPPORTED_PRIMARY_DATASETS:
@@ -186,6 +219,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         baseline=str(raw["baseline"]),
         variant=variant,
         training=training,
+        publish=publish,
         dataset=dataset_resolved,
         output={"dir": str(output_resolved["dir"])},
         raw=raw,

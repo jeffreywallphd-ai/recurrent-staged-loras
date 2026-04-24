@@ -65,8 +65,49 @@ For gated/rate-limited model or dataset access, authenticate once:
 ```bash
 huggingface-cli login
 ```
+or set an environment variable for non-interactive shells:
+```bash
+export HF_TOKEN=hf_xxx
+```
 
 By default, dataset artifacts are cached under `./.cache/hf_datasets` unless overridden in config.
+Never place tokens in repository configs (`*.json`) or commit token files.
+
+## Optional run publishing to Hugging Face Hub
+
+Publishing is opt-in and disabled by default. Add a `publish` block to an experiment config:
+
+```json
+"publish": {
+  "enabled": true,
+  "hub_model_repo": "org-or-user/recurrent-staged-loras-model",
+  "hub_dataset_repo": "org-or-user/recurrent-staged-loras-dataset",
+  "private": true,
+  "commit_message": "Publish run artifacts",
+  "include_checkpoint": true,
+  "include_metrics": true,
+  "include_dataset_partitions": true
+}
+```
+
+Uploaded model-side artifacts include `checkpoint.pt`, `config.json`, `metadata.json`, `metrics.json`, `answer_eval_diagnostics.json`, `dataset_preprocessing_summary.json`, and a generated model card.
+Uploaded dataset-side artifacts include exact `train`/`eval` partitions, sample IDs/hashes/fingerprints, preprocessing metadata, and a dataset card.
+
+Publish an existing completed run directory:
+
+```bash
+python -m scripts.publish_run_to_hf \
+  --run-dir outputs/local_synthetic_debug/local_synthetic_debug_seed7 \
+  --model-repo org-or-user/recurrent-staged-loras-model \
+  --dataset-repo org-or-user/recurrent-staged-loras-dataset \
+  --private \
+  --commit-message \"Publish debug run\"
+```
+
+Security reminders:
+- Never commit tokens.
+- Never put tokens in JSON experiment configs.
+- Verify rights for any dataset content before publishing.
 
 ## Quick Start (setup verification in minutes)
 
