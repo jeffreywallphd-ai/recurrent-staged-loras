@@ -8,3 +8,4 @@ __pycache__/
 outputs/
 hf_token*
 huggingface_token*
+experiments/configs/*.json
