@@ -91,6 +91,25 @@ def test_output_dir_logging_reports_explicit_override(monkeypatch: pytest.Monkey
     assert "resolved_dir='custom/outputs'" in captured.out
 
 
+def test_output_dir_legacy_relative_outputs_dir_is_remapped_to_hf_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_HOME", "D:/huggingface")
+    raw = _base_raw(Path("custom/output"))
+    raw["output"] = {"dir": "outputs/stage_specialized_recurrence"}
+    runtime = load_runtime_config_from_raw(raw)
+    assert runtime.output["dir"].replace("\\\\", "/") == "D:/huggingface/generated_models/stage_specialized_recurrence"
+
+
+def test_output_dir_logging_reports_legacy_relative_remap(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("HF_HOME", "D:/huggingface")
+    raw = _base_raw(Path("custom/output"))
+    raw["output"] = {"dir": "outputs/stage_specialized_recurrence"}
+    load_runtime_config_from_raw(raw)
+    captured = capsys.readouterr()
+    assert "legacy_relative_dir='outputs/stage_specialized_recurrence'" in captured.out
+    assert "source=runtime.output.dir (legacy relative outputs/* remapped to HF_HOME/generated_models)" in captured.out
+    assert "resolved_dir='D:/huggingface/generated_models/stage_specialized_recurrence'" in captured.out
+
+
 def test_publish_enabled_requires_repo_ids(tmp_path: Path) -> None:
     raw = _base_raw(tmp_path)
     raw["publish"] = {"enabled": True}
