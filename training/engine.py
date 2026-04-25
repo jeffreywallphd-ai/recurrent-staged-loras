@@ -434,6 +434,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         max_steps=adjusted_max_steps,
         eval_interval_steps=runtime.training.eval_interval_steps,
         eval_enabled=runtime.training.eval_enabled,
+        log_interval_steps=runtime.training.log_interval_steps,
         tokenizer=components.tokenizer,
         max_train_tokens=max_train_tokens,
         max_wall_time_seconds=max_wall_time_seconds,

@@ -164,6 +164,34 @@ Runtime expectations:
 - Local synthetic debug preset: typically a few minutes on CPU.
 - Full study configs: substantially longer and usually require GPU memory/throughput suitable for 8B-class models.
 
+## Training Progress Logging
+
+Training emits lightweight, print-based progress logs so long-running jobs are easy to monitor without extra tooling.
+
+- Prefixes:
+  - `[train]` for optimizer-step progress updates
+  - `[eval]` for evaluation start/completion markers
+- Train log fields include:
+  - current step / max steps
+  - percent complete
+  - current loss
+  - cumulative tokens seen
+  - tokens/second
+  - elapsed wall time
+  - CUDA memory (`gpu_alloc`, `gpu_reserved`) when CUDA is available
+- Logging cadence:
+  - Controlled by `training.log_interval_steps`
+  - Defaults to `50` (or falls back to `eval_interval_steps` when only that value is set in config)
+  - Always logs the final completed training step
+
+Example output:
+
+```text
+[train] step 120/2000 (6.0%) loss=2.4312 tokens=184320 tok/s=241.3 elapsed=00:12:44 gpu_alloc=3.42GB gpu_reserved=4.10GB
+[eval] starting evaluation at step 120
+[eval] completed in 3.82s loss=2.2174
+```
+
 ### Model loading modes (lab GPU vs constrained laptop)
 
 Large backbones can run in two practical modes:
