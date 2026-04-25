@@ -62,6 +62,34 @@ def test_output_dir_defaults_to_trimmed_hf_home_generated_models(monkeypatch: py
     assert runtime.output["dir"].replace("\\\\", "/") == "D:/huggingface/generated_models"
 
 
+def test_output_dir_logging_reports_default_source(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("HF_HOME", "D:/huggingface")
+    raw = {
+        "baseline": "base",
+        "model": {
+            "name": "test/tiny",
+            "architecture_type": "dense",
+            "standard_lora": {"enabled": False},
+            "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none"},
+        },
+    }
+    load_runtime_config_from_raw(raw)
+    captured = capsys.readouterr()
+    assert "[output]" in captured.out
+    assert "source=default from HF_HOME/generated_models" in captured.out
+    assert "resolved_dir='D:/huggingface/generated_models'" in captured.out
+
+
+def test_output_dir_logging_reports_explicit_override(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("HF_HOME", "D:/huggingface")
+    raw = _base_raw(Path("custom/output"))
+    raw["output"] = {"dir": "custom/outputs"}
+    load_runtime_config_from_raw(raw)
+    captured = capsys.readouterr()
+    assert "source=runtime.output.dir (explicit override)" in captured.out
+    assert "resolved_dir='custom/outputs'" in captured.out
+
+
 def test_publish_enabled_requires_repo_ids(tmp_path: Path) -> None:
     raw = _base_raw(tmp_path)
     raw["publish"] = {"enabled": True}

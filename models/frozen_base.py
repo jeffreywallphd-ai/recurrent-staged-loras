@@ -96,8 +96,36 @@ class FrozenBaseCausalLM(nn.Module):
             kwargs["quantization_config"] = quantization_config
 
         self.hf_model = AutoModelForCausalLM.from_pretrained(self.model_name, **kwargs)
-        if self.config.model_loading_mode == "full_gpu" and torch.cuda.is_available():
-            self.hf_model = self.hf_model.to("cuda")
+        cuda_available = torch.cuda.is_available()
+        if self.config.model_loading_mode == "full_gpu":
+            if cuda_available:
+                print(
+                    "[device] "
+                    "selection=cuda "
+                    "reason=model_loading.mode=full_gpu and torch.cuda.is_available() is true"
+                )
+                self.hf_model = self.hf_model.to("cuda")
+            else:
+                print(
+                    "[device] "
+                    "selection=cpu "
+                    "reason=model_loading.mode=full_gpu but torch.cuda.is_available() is false; "
+                    "keeping model on CPU"
+                )
+        else:
+            resolved_device_map = kwargs.get("device_map")
+            if resolved_device_map is None:
+                print(
+                    "[device] "
+                    "selection=cpu "
+                    "reason=model_loading.mode=auto with device_map omitted (offload disabled or explicitly null)"
+                )
+            else:
+                print(
+                    "[device] "
+                    f"selection=device_map:{resolved_device_map} "
+                    "reason=model_loading.mode=auto delegates placement to Hugging Face device_map"
+                )
         if self.config.gradient_checkpointing:
             self.hf_model.gradient_checkpointing_enable()
             if self.config.freeze_base:
