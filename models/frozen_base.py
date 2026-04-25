@@ -87,8 +87,9 @@ class FrozenBaseCausalLM(nn.Module):
             "trust_remote_code": self.config.trust_remote_code,
             "torch_dtype": self._torch_dtype(self.config.dtype),
         }
-        if self.config.device_map is not None:
-            kwargs["device_map"] = self.config.device_map
+        resolved_device_map = self._resolve_device_map()
+        if resolved_device_map is not None:
+            kwargs["device_map"] = resolved_device_map
         if self.config.attn_implementation:
             kwargs["attn_implementation"] = self.config.attn_implementation
         if quantization_config is not None:
@@ -97,6 +98,13 @@ class FrozenBaseCausalLM(nn.Module):
         self.hf_model = AutoModelForCausalLM.from_pretrained(self.model_name, **kwargs)
         if self.config.gradient_checkpointing:
             self.hf_model.gradient_checkpointing_enable()
+            if self.config.freeze_base:
+                enable_input_grads = getattr(self.hf_model, "enable_input_require_grads", None)
+                if callable(enable_input_grads):
+                    # Gradient checkpointing with a frozen transformer still needs
+                    # hidden-state inputs requiring grad so downstream trainable
+                    # recurrent/adaptation modules receive gradients.
+                    enable_input_grads()
         cfg = getattr(self.hf_model, "config", None)
         self.hidden_size = int(getattr(cfg, "hidden_size", self.hidden_size))
         self.vocab_size = int(getattr(cfg, "vocab_size", self.vocab_size))
@@ -104,6 +112,17 @@ class FrozenBaseCausalLM(nn.Module):
         if self.config.freeze_base:
             for p in self.hf_model.parameters():
                 p.requires_grad = False
+
+    def _resolve_device_map(self) -> str | None:
+        if self.config.model_loading_mode == "full_gpu":
+            return None
+        if self.config.model_loading_mode != "auto":
+            raise ValueError(f"Unsupported model_loading_mode '{self.config.model_loading_mode}'")
+        if self.config.device_map is None:
+            return None
+        if self.config.device_map == "auto" and not self.config.model_loading_allow_offload:
+            return None
+        return self.config.device_map
 
     def enable_standard_lora(self, rank: int, alpha: int, dropout: float, target_modules: list[str]) -> None:
         """Attach PEFT LoRA adapters to the HF backbone.
@@ -165,7 +184,24 @@ class FrozenBaseCausalLM(nn.Module):
             return self.internal_model.lm_head(refined_hidden_states)
         if self.hf_model is None:
             raise RuntimeError("HF backend missing")
+        lm_meta = self.meta_parameter_report(module_path="lm_head")
+        if lm_meta:
+            raise RuntimeError(
+                "Unsafe direct LM-head call: lm_head parameters are still on the meta device. "
+                "This usually means the model was loaded with offload/sharding that defers "
+                "materialization for submodule-only calls. "
+                "Use model.model_loading.mode='full_gpu', or set model_loading.require_no_meta_for_training=true "
+                "to fail before training starts. Meta parameters: "
+                + ", ".join(item["name"] for item in lm_meta[:8])
+            )
         return self.hf_model.lm_head(refined_hidden_states)
+
+    def project_to_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Align hidden states to LM-head dtype/device then project to logits."""
+        lm_head_dtype, lm_head_device = self.lm_head_dtype_device()
+        if hidden_states.dtype != lm_head_dtype or hidden_states.device != lm_head_device:
+            hidden_states = hidden_states.to(device=lm_head_device, dtype=lm_head_dtype)
+        return self.forward_lm_head(hidden_states)
 
     def runtime_dtype_device(self) -> tuple[torch.dtype, torch.device]:
         """Return dtype/device used by backbone/LM-head parameters."""
@@ -184,6 +220,11 @@ class FrozenBaseCausalLM(nn.Module):
             return param.dtype, param.device
         if self.hf_model is None:
             raise RuntimeError("HF backend missing")
+        if any(p.device.type == "meta" for p in self.hf_model.lm_head.parameters()):
+            raise RuntimeError(
+                "LM head parameters are on the meta device and cannot be used for a direct submodule call. "
+                "Adjust model_loading settings or choose a smaller model."
+            )
         param = next(self.hf_model.lm_head.parameters())
         return param.dtype, param.device
 
@@ -208,3 +249,53 @@ class FrozenBaseCausalLM(nn.Module):
 
         # Fallback for models that do not expose input embeddings.
         return next(self.hf_model.parameters()).device
+
+    def meta_parameter_report(self, module_path: str | None = None) -> list[dict[str, str]]:
+        """Return metadata for parameters materialized on the meta device."""
+        if self.internal_model is not None:
+            named_params = self.internal_model.named_parameters()
+            prefix = ""
+        else:
+            if self.hf_model is None:
+                raise RuntimeError("HF backend missing")
+            module = self.hf_model
+            prefix = ""
+            if module_path:
+                module = self.hf_model.get_submodule(module_path)
+                prefix = f"{module_path}."
+            named_params = module.named_parameters()
+
+        rows: list[dict[str, str]] = []
+        for name, param in named_params:
+            if param.device.type != "meta":
+                continue
+            full_name = f"{prefix}{name}" if prefix else name
+            owner = full_name.rsplit(".", 1)[0] if "." in full_name else "<root>"
+            rows.append({"name": full_name, "module": owner, "device": str(param.device)})
+        return rows
+
+    def parameter_device_summary(self) -> dict[str, str]:
+        """Summarize key module devices for startup diagnostics."""
+        if self.internal_model is not None:
+            return {
+                "input_embeddings": str(self.internal_model.embed_tokens.weight.device),
+                "transformer_body": str(next(self.internal_model.out_proj.parameters()).device),
+                "lm_head": str(next(self.internal_model.lm_head.parameters()).device),
+            }
+        if self.hf_model is None:
+            raise RuntimeError("HF backend missing")
+
+        def _module_device(module_path: str) -> str:
+            try:
+                module = self.hf_model.get_submodule(module_path)
+                param = next(module.parameters())
+                return str(param.device)
+            except Exception:
+                return "n/a"
+
+        body_name = getattr(self.hf_model, "base_model_prefix", "model")
+        return {
+            "input_embeddings": str(self.input_device),
+            "transformer_body": _module_device(body_name),
+            "lm_head": _module_device("lm_head"),
+        }

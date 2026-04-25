@@ -51,11 +51,7 @@ class StagedLatentAdaptationModel(nn.Module):
             refined = refiner_out.refined_hidden_states
             per_step = refiner_out.per_step_hidden_states
 
-        lm_head_dtype, lm_head_device = self.base_model.lm_head_dtype_device()
-        if refined.dtype != lm_head_dtype or refined.device != lm_head_device:
-            refined = refined.to(device=lm_head_device, dtype=lm_head_dtype)
-
-        logits = self.base_model.forward_lm_head(refined)
+        logits = self.base_model.project_to_logits(refined)
         return ModelForwardOutput(
             logits=logits,
             refined_hidden_states=refined,

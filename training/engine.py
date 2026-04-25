@@ -80,6 +80,76 @@ def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
 
 
+def _meta_report_for_model(model: StagedLatentAdaptationModel) -> list[dict[str, str]]:
+    return model.base_model.meta_parameter_report()
+
+
+def _validate_model_loading_for_training(*, runtime: RuntimeConfig, model: StagedLatentAdaptationModel) -> None:
+    base_cfg = runtime.variant.base
+    lm_head_meta = model.base_model.meta_parameter_report(module_path="lm_head")
+    meta_rows = _meta_report_for_model(model)
+
+    if lm_head_meta:
+        details = ", ".join(f"{item['name']} ({item['module']})" for item in lm_head_meta[:12])
+        raise ValueError(
+            "Model loading is incompatible with staged training: LM head parameters are on the meta device, "
+            "but staged forward calls lm_head directly. "
+            f"LM head meta parameters: {details}. "
+            "Use a smaller model, set model.model_loading.mode='full_gpu', or disable strict checking only if you "
+            "replace direct lm_head submodule calls."
+        )
+
+    if base_cfg.model_loading_require_no_meta_for_training and meta_rows:
+        sample = ", ".join(f"{item['name']} ({item['module']})" for item in meta_rows[:20])
+        raise ValueError(
+            "Training aborted before first batch: parameters are still on the meta device. "
+            f"Found {len(meta_rows)} meta parameters. Examples: {sample}. "
+            "Set model.model_loading.require_no_meta_for_training=false to allow meta/offloaded loading, or "
+            "switch to model.model_loading.mode='full_gpu' / a smaller model for materialized training."
+        )
+
+
+def _validate_trainable_gradients(model: StagedLatentAdaptationModel) -> None:
+    trainable = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
+    expected_trainable = (
+        bool(model.config.refiner.enabled)
+        or bool(model.config.standard_lora.enabled)
+        or bool(model.config.refiner_adapter.enabled)
+    )
+    if expected_trainable and not trainable:
+        raise ValueError("No trainable parameters found for an adaptation-enabled configuration.")
+    if model.config.refiner.enabled and not any(name.startswith("refiner.") for name, _ in trainable):
+        raise ValueError("Refiner is enabled but no refiner parameters are marked trainable.")
+
+
+def _log_model_loading_diagnostics(*, runtime: RuntimeConfig, model: StagedLatentAdaptationModel) -> None:
+    base_cfg = runtime.variant.base
+    base_summary = model.base_model.parameter_device_summary()
+    trainable_devices: dict[str, int] = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        module = name.split(".", 1)[0]
+        key = f"{module}:{param.device}"
+        trainable_devices[key] = trainable_devices.get(key, 0) + 1
+    meta_rows = _meta_report_for_model(model)
+    print(
+        "[device] "
+        f"loading_mode={base_cfg.model_loading_mode} "
+        f"allow_offload={base_cfg.model_loading_allow_offload} "
+        f"require_no_meta_for_training={base_cfg.model_loading_require_no_meta_for_training} "
+        f"device_map={base_cfg.device_map}"
+    )
+    print(
+        "[device] "
+        f"input_embeddings={base_summary['input_embeddings']} "
+        f"transformer_body={base_summary['transformer_body']} "
+        f"lm_head={base_summary['lm_head']} "
+        f"trainable_modules={trainable_devices if trainable_devices else 'none'} "
+        f"meta_params={len(meta_rows)}"
+    )
+
+
 def _stable_hash(payload: object) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -207,6 +277,9 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     """
     _set_seed(runtime.training.seed, runtime.training.deterministic)
     model = build_model_from_variant(runtime.variant)
+    _validate_trainable_gradients(model)
+    _log_model_loading_diagnostics(runtime=runtime, model=model)
+    _validate_model_loading_for_training(runtime=runtime, model=model)
     model.train()
 
     dataset_name = str(runtime.dataset["name"]).strip().lower()

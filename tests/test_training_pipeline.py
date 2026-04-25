@@ -11,7 +11,7 @@ from data.dataset import SequenceDataset, collate_token_sequences
 from models.config import parse_variant_config
 from training.config_loader import PublishConfig, RuntimeConfig, TrainingConfig, load_runtime_config_from_raw
 from training.model_validation import ModelValidationConfig
-from training.engine import build_training_components, run_training_loop
+from training.engine import _validate_model_loading_for_training, _validate_trainable_gradients, build_training_components, run_training_loop
 from training.loop import _decode_answer_tokens, evaluate, move_batch_to_device, run_training
 from training.metrics_schema import AGGREGATE_METRICS, AGG_GROUP_BY_FIELDS, REPORT_TABLE_FIELDS, RUN_METRICS_FIELDS
 from scripts.run_all_experiments import _build_ablation_runs
@@ -103,6 +103,26 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
     diagnostics = json.loads(diagnostics_path.read_text())
     assert diagnostics["numeric_multi_value_rule"] == "strict_set"
     assert "symbolic_eval_attempt_count" in diagnostics
+
+
+def test_meta_parameters_are_detected_before_training_with_names(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    model = build_training_components(rt).model
+    assert model.base_model.internal_model is not None
+    model.base_model.internal_model.lm_head = model.base_model.internal_model.lm_head.to("meta")
+
+    with pytest.raises(ValueError) as exc:
+        _validate_model_loading_for_training(runtime=rt, model=model)
+    message = str(exc.value)
+    assert "LM head parameters are on the meta device" in message
+    assert "lm_head.weight" in message
+    assert "lm_head" in message
+
+
+def test_trainable_refiner_parameters_are_required_when_refiner_enabled(tmp_path: Path) -> None:
+    rt = _runtime(tmp_path)
+    model = build_training_components(rt).model
+    _validate_trainable_gradients(model)
 
 
 def test_move_batch_to_device_moves_tensors_and_preserves_metadata() -> None:
