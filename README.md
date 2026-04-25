@@ -111,6 +111,12 @@ Security reminders:
 
 ## Quick Start (setup verification in minutes)
 
+Simple train command:
+
+```bash
+python -m training.train --config experiments/configs/stage_specialized_recurrence_debug.json --run-name smoke_standard_lora
+```
+
 Run a local CPU-friendly debug preset via the experiment orchestrator:
 
 ```bash
