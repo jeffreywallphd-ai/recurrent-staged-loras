@@ -11,6 +11,11 @@
     "bnb_4bit_compute_dtype": "bfloat16",
     "attn_implementation": "sdpa",
     "gradient_checkpointing": true,
+    "model_loading": {
+      "mode": "auto",
+      "allow_offload": true,
+      "require_no_meta_for_training": true
+    },
     "architecture_type": "dense",
     "frozen_base": true,
     "standard_lora": {

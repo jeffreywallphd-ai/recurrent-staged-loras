@@ -30,6 +30,25 @@ def test_variant_model_fields_parse_full_real_backend_schema() -> None:
     assert variant.base.gradient_checkpointing is True
 
 
+def test_model_loading_block_parses_and_keeps_auto_device_map_behavior() -> None:
+    raw = {
+        "baseline": "base",
+        "model": {
+            "name": "test/tiny",
+            "architecture_type": "dense",
+            "device_map": "auto",
+            "model_loading": {"mode": "auto", "allow_offload": True, "require_no_meta_for_training": True},
+            "standard_lora": {"enabled": False},
+            "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none"},
+        },
+    }
+    variant = parse_variant_config(raw)
+    assert variant.base.device_map == "auto"
+    assert variant.base.model_loading_mode == "auto"
+    assert variant.base.model_loading_allow_offload is True
+    assert variant.base.model_loading_require_no_meta_for_training is True
+
+
 def test_study_and_pilot_presets_are_separated() -> None:
     study = load_experiment_config(Path("experiments/configs/standard_lora.json"))
     pilot = load_experiment_config(Path("experiments/configs/standard_lora_pilot.json"))

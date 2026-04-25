@@ -14,6 +14,7 @@ from typing import Any, Literal
 RecurrenceMode = Literal["none", "latent_only", "shared", "stage_specialized"]
 AdapterSharing = Literal["none", "shared", "per_step"]
 ArchitectureType = Literal["dense", "moe"]
+ModelLoadingMode = Literal["auto", "full_gpu"]
 
 
 @dataclass(slots=True)
@@ -30,6 +31,9 @@ class BaseModelConfig:
     attn_implementation: str | None = None
     gradient_checkpointing: bool = False
     architecture_type: ArchitectureType = "dense"
+    model_loading_mode: ModelLoadingMode = "auto"
+    model_loading_allow_offload: bool = True
+    model_loading_require_no_meta_for_training: bool = True
 
 
 @dataclass(slots=True)
@@ -99,7 +103,11 @@ def _parse_adapter_config(raw: dict[str, Any] | None) -> AdapterConfig:
 
 def parse_variant_config(raw: dict[str, Any]) -> VariantConfig:
     model = raw["model"]
+    model_loading_raw = model.get("model_loading", {})
     ref_raw = model.get("latent_refiner", {})
+    model_loading_mode = str(model_loading_raw.get("mode", "auto"))
+    if model_loading_mode not in {"auto", "full_gpu"}:
+        raise ValueError("model.model_loading.mode must be one of {'auto','full_gpu'}")
     variant = VariantConfig(
         name=str(raw["baseline"]),
         base=BaseModelConfig(
@@ -115,6 +123,9 @@ def parse_variant_config(raw: dict[str, Any]) -> VariantConfig:
             attn_implementation=model.get("attn_implementation"),
             gradient_checkpointing=bool(model.get("gradient_checkpointing", False)),
             architecture_type=str(model.get("architecture_type", "dense")),
+            model_loading_mode=model_loading_mode,
+            model_loading_allow_offload=bool(model_loading_raw.get("allow_offload", True)),
+            model_loading_require_no_meta_for_training=bool(model_loading_raw.get("require_no_meta_for_training", True)),
         ),
         standard_lora=_parse_adapter_config(model.get("standard_lora")),
         refiner=RefinerConfig(

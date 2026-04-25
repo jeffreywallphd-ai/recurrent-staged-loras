@@ -164,6 +164,15 @@ Runtime expectations:
 - Local synthetic debug preset: typically a few minutes on CPU.
 - Full study configs: substantially longer and usually require GPU memory/throughput suitable for 8B-class models.
 
+### Model loading modes (lab GPU vs constrained laptop)
+
+Large backbones can run in two practical modes:
+
+- `model.model_loading.mode = "full_gpu"`: asks Transformers to materialize the model without auto offload/sharding.
+- `model.model_loading.mode = "auto"`: keeps `device_map` behavior for capability-aware loading; this may offload shards on constrained machines.
+
+For staged/recurrent training, this repo directly invokes the base LM head (`forward_lm_head`) after refinement. Direct submodule calls are unsafe when that submodule remains on `meta` due to offload dispatch assumptions. Startup validation now fails early with actionable parameter/module names if meta tensors are detected in required paths.
+
 ## Troubleshooting
 
 - **Missing dependencies / import errors**
@@ -181,6 +190,10 @@ Runtime expectations:
 - **Runs are unexpectedly slow**
   - Use a `*_debug.json` preset first.
   - Keep `subset_size` and `max_steps` small for smoke checks.
+- **Meta tensor / offload errors (for example `Cannot copy out of meta tensor; no data!`)**
+  - Keep `model.model_loading.require_no_meta_for_training=true` to fail before the first batch with clear diagnostics.
+  - Prefer a smaller model or `model.model_loading.mode="full_gpu"` when hardware can fully materialize required modules.
+  - Avoid direct calls into offloaded HF submodules unless those submodules are guaranteed materialized.
 
 ## Study outputs
 

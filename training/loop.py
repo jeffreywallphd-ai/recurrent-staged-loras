@@ -110,10 +110,14 @@ def _resolve_input_device(model: StagedLatentAdaptationModel) -> torch.device:
     input_device = getattr(getattr(model, "base_model", None), "input_device", None)
     if isinstance(input_device, torch.device):
         return input_device
-    try:
-        return next(model.parameters()).device
-    except StopIteration as exc:  # pragma: no cover - defensive only
-        raise RuntimeError("Unable to resolve model input device: model has no parameters.") from exc
+    parameters = getattr(model, "parameters", None)
+    if callable(parameters):
+        try:
+            return next(parameters()).device
+        except StopIteration as exc:  # pragma: no cover - defensive only
+            raise RuntimeError("Unable to resolve model input device: model has no parameters.") from exc
+    # Lightweight fake models used in metric unit tests may not be nn.Module.
+    return torch.device("cpu")
 
 
 def _validate_batch_input_device(
@@ -148,7 +152,7 @@ def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Te
 
     if model.config.refiner.enabled and out.extras["per_step"]:
         step_hidden_states = out.extras["per_step"]
-        logits_steps = [model.base_model.forward_lm_head(h)[:, :-1, :] for h in step_hidden_states]
+        logits_steps = [model.base_model.project_to_logits(h)[:, :-1, :] for h in step_hidden_states]
 
         stage1 = batch["stage1_mask"][:, 1:]
         stage2 = batch["stage2_mask"][:, 1:]
