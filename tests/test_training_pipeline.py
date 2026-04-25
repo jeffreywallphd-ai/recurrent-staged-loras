@@ -105,6 +105,18 @@ def test_stage_aware_loss_and_metrics_fields_present(tmp_path: Path) -> None:
     assert "symbolic_eval_attempt_count" in diagnostics
 
 
+def test_training_without_publish_does_not_import_publish_or_pyarrow(tmp_path: Path) -> None:
+    sys.modules.pop("publish.huggingface_export", None)
+    sys.modules.pop("pyarrow", None)
+
+    rt = _runtime(tmp_path)
+    rt.publish.enabled = False
+    run_training_loop(components=build_training_components(rt), run_name="no_publish_imports", config_name="unit")
+
+    assert "publish.huggingface_export" not in sys.modules
+    assert "pyarrow" not in sys.modules
+
+
 def test_meta_parameters_are_detected_before_training_with_names(tmp_path: Path) -> None:
     rt = _runtime(tmp_path)
     model = build_training_components(rt).model

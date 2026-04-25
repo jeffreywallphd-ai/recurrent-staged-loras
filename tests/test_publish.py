@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import sys
 
 import pytest
 
@@ -116,15 +117,10 @@ def test_dataset_partitions_artifact_contains_identity_fields(tmp_path: Path) ->
 
 
 def test_publish_not_called_unless_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    called = {"publish": 0}
-
-    def _stub_publish(*_args, **_kwargs):
-        called["publish"] += 1
-
-    monkeypatch.setattr("training.engine.publish_run_directory", _stub_publish)
+    sys.modules.pop("publish.huggingface_export", None)
     runtime = load_runtime_config_from_raw(_base_raw(tmp_path))
     run_training_loop(components=build_training_components(runtime), run_name="no_publish", config_name="unit")
-    assert called["publish"] == 0
+    assert "publish.huggingface_export" not in sys.modules
 
 
 def test_publish_utility_builds_hf_compatible_payloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
