@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 import json
 import os
+import re
 
 from models.config import VariantConfig, parse_variant_config
 from models.frozen_base import FrozenBaseCausalLM
@@ -61,6 +62,38 @@ def _log_output_dir_resolution(*, resolved_dir: str, source: str, hf_home_raw: s
     )
 
 
+def _is_absolute_path(raw_path: str) -> bool:
+    """Cross-platform absolute path detection (POSIX + Windows drive/UNC)."""
+    if Path(raw_path).is_absolute():
+        return True
+    return bool(re.match(r"^[a-zA-Z]:[\\/]", raw_path)) or raw_path.startswith("\\\\")
+
+
+def _is_legacy_relative_outputs_dir(raw_path: str) -> bool:
+    """Detect legacy repo-relative outputs paths, e.g. ``outputs/foo``."""
+    parts = [token for token in re.split(r"[\\/]+", raw_path.strip()) if token]
+    return bool(parts) and parts[0].lower() == "outputs"
+
+
+def _resolve_output_dir_from_user_override(*, user_dir: str, hf_home_trimmed: str) -> tuple[str, str]:
+    """Resolve user output.dir with compatibility fallback for legacy configs.
+
+    Legacy configs often pin ``output.dir`` to a relative ``outputs/...`` path.
+    On Windows this resolves under the current working directory (often on C:),
+    which conflicts with the expected HF_HOME-backed D: storage. When HF_HOME is
+    set, remap that specific legacy relative form under
+    ``$HF_HOME/generated_models`` while preserving explicit absolute/custom paths.
+    """
+    if hf_home_trimmed and (not _is_absolute_path(user_dir)) and _is_legacy_relative_outputs_dir(user_dir):
+        suffix_parts = [token for token in re.split(r"[\\/]+", user_dir.strip()) if token][1:]
+        remapped = Path(hf_home_trimmed).expanduser() / "generated_models"
+        if suffix_parts:
+            remapped = remapped.joinpath(*suffix_parts)
+        source = "runtime.output.dir (legacy relative outputs/* remapped to HF_HOME/generated_models)"
+        return str(remapped), source
+    return user_dir, "runtime.output.dir (explicit override)"
+
+
 SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": _default_output_dir()}
 SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
 SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
@@ -78,17 +111,30 @@ def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     external_evaluations = list(dataset_raw.get("external_evaluations", SHARED_DATASET_DEFAULTS["external_evaluations"]))
 
     default_output_dir = _default_output_dir()
-    output_raw = {"dir": default_output_dir}
+    output_raw: dict[str, Any] = {"dir": default_output_dir}
     user_output_raw = dict(raw.get("output", {}))
-    output_raw.update(user_output_raw)
     hf_home_raw = os.getenv("HF_HOME")
     hf_home_trimmed = hf_home_raw.strip() if hf_home_raw else ""
-    resolved_dir = str(output_raw.get("dir", default_output_dir))
     if "dir" in user_output_raw:
-        source = "runtime.output.dir (explicit override)"
+        raw_user_dir = str(user_output_raw["dir"])
+        resolved_dir, source = _resolve_output_dir_from_user_override(user_dir=raw_user_dir, hf_home_trimmed=hf_home_trimmed)
+        output_raw["dir"] = resolved_dir
+        output_raw.update({k: v for k, v in user_output_raw.items() if k != "dir"})
+        if source != "runtime.output.dir (explicit override)":
+            cwd_resolved = str((Path.cwd() / raw_user_dir).resolve())
+            print(
+                "[output] "
+                f"legacy_relative_dir='{raw_user_dir}' "
+                f"cwd_resolved='{cwd_resolved}' "
+                f"remapped_dir='{resolved_dir}'"
+            )
     elif hf_home_trimmed:
+        output_raw.update(user_output_raw)
+        resolved_dir = str(output_raw.get("dir", default_output_dir))
         source = "default from HF_HOME/generated_models"
     else:
+        output_raw.update(user_output_raw)
+        resolved_dir = str(output_raw.get("dir", default_output_dir))
         source = "default fallback outputs/default (HF_HOME not set)"
     _log_output_dir_resolution(
         resolved_dir=resolved_dir,
