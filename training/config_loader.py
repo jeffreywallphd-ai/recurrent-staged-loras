@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 import json
+import os
 
 from models.config import VariantConfig, parse_variant_config
 from models.frozen_base import FrozenBaseCausalLM
@@ -35,6 +36,19 @@ SHARED_DATASET_DEFAULTS: dict[str, Any] = {
     "external_evaluations": [],
 }
 
+def _default_output_dir() -> str:
+    """Resolve default run-artifact directory.
+
+    If HF_HOME is configured, keep generated artifacts with Hugging Face cache
+    assets under ``$HF_HOME/generated_models``. Fall back to repository-local
+    outputs for environments without HF_HOME.
+    """
+    hf_home = os.getenv("HF_HOME")
+    if hf_home:
+        return str(Path(hf_home) / "generated_models")
+    return "outputs/default"
+
+
 SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": "outputs/default"}
 SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
 SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
@@ -51,7 +65,7 @@ def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     settings.update(dict(dataset_raw.get("settings", {})))
     external_evaluations = list(dataset_raw.get("external_evaluations", SHARED_DATASET_DEFAULTS["external_evaluations"]))
 
-    output_raw = dict(SHARED_OUTPUT_DEFAULTS)
+    output_raw = {"dir": _default_output_dir()}
     output_raw.update(dict(raw.get("output", {})))
     return {"name": dataset_name, "settings": settings, "external_evaluations": external_evaluations}, output_raw
 
