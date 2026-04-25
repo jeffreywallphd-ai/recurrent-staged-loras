@@ -84,13 +84,13 @@ Publishing is opt-in and disabled by default. Add a `publish` block to an experi
   "hub_dataset_repo": "org-or-user/recurrent-staged-loras-dataset",
   "private": true,
   "commit_message": "Publish run artifacts",
-  "include_checkpoint": true,
+  "include_checkpoint": false,
   "include_metrics": true,
   "include_dataset_partitions": true
 }
 ```
 
-Uploaded model-side artifacts include `checkpoint.pt`, `config.json`, `metadata.json`, `metrics.json`, `answer_eval_diagnostics.json`, `dataset_preprocessing_summary.json`, and a generated model card.
+Uploaded model-side artifacts include safetensors model weights (`model.safetensors` or sharded `model-*.safetensors` + index), `config.json`, `metadata.json`, `metrics.json`, `answer_eval_diagnostics.json`, `dataset_preprocessing_summary.json`, and a generated model card. Local `checkpoint.pt` files are removed after safetensors validation during publish.
 Uploaded dataset-side artifacts include exact `train`/`eval` partitions, sample IDs/hashes/fingerprints, preprocessing metadata, and a dataset card.
 
 Publish an existing completed run directory:

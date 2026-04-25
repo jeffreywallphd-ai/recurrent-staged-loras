@@ -43,13 +43,14 @@ def _default_output_dir() -> str:
     assets under ``$HF_HOME/generated_models``. Fall back to repository-local
     outputs for environments without HF_HOME.
     """
-    hf_home = os.getenv("HF_HOME")
+    hf_home_raw = os.getenv("HF_HOME")
+    hf_home = hf_home_raw.strip() if hf_home_raw else ""
     if hf_home:
-        return str(Path(hf_home) / "generated_models")
+        return str((Path(hf_home).expanduser() / "generated_models"))
     return "outputs/default"
 
 
-SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": "outputs/default"}
+SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": _default_output_dir()}
 SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
 SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
 SUPPORTED_EXTERNAL_EVAL_DATASETS = {"gsm8k", "math", "svamp"}
@@ -100,7 +101,7 @@ class PublishConfig:
     hub_dataset_repo: str | None = None
     private: bool = True
     commit_message: str | None = None
-    include_checkpoint: bool = True
+    include_checkpoint: bool = False
     max_shard_size: str = "4GB"
     include_metrics: bool = True
     include_dataset_partitions: bool = True
@@ -187,7 +188,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         hub_dataset_repo=(str(publish_raw["hub_dataset_repo"]) if publish_raw.get("hub_dataset_repo") else None),
         private=bool(publish_raw.get("private", True)),
         commit_message=(str(publish_raw["commit_message"]) if publish_raw.get("commit_message") else None),
-        include_checkpoint=bool(publish_raw.get("include_checkpoint", True)),
+        include_checkpoint=bool(publish_raw.get("include_checkpoint", False)),
         max_shard_size=str(publish_raw.get("max_shard_size", "4GB")),
         include_metrics=bool(publish_raw.get("include_metrics", True)),
         include_dataset_partitions=bool(publish_raw.get("include_dataset_partitions", True)),

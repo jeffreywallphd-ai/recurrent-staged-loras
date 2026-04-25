@@ -28,11 +28,27 @@ def test_publish_defaults_disabled(tmp_path: Path) -> None:
     assert runtime.publish.enabled is False
     assert runtime.publish.hub_model_repo is None
     assert runtime.publish.hub_dataset_repo is None
+    assert runtime.publish.include_checkpoint is False
     assert runtime.publish.max_shard_size == "4GB"
 
 
 def test_output_dir_defaults_to_hf_home_generated_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HF_HOME", "D:/huggingface")
+    raw = {
+        "baseline": "base",
+        "model": {
+            "name": "test/tiny",
+            "architecture_type": "dense",
+            "standard_lora": {"enabled": False},
+            "latent_refiner": {"enabled": False, "num_recurrent_steps": 1, "recurrence_mode": "none", "adapter_sharing": "none"},
+        },
+    }
+    runtime = load_runtime_config_from_raw(raw)
+    assert runtime.output["dir"].replace("\\\\", "/") == "D:/huggingface/generated_models"
+
+
+def test_output_dir_defaults_to_trimmed_hf_home_generated_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_HOME", "  D:/huggingface  ")
     raw = {
         "baseline": "base",
         "model": {
@@ -133,6 +149,7 @@ def test_publish_utility_builds_hf_compatible_payloads(tmp_path: Path, monkeypat
     assert (result.output_dir / "model_validation_report.md").exists()
     assert (result.output_dir / "hf_model").exists()
     assert any((result.output_dir / "hf_model").glob("model*.safetensors"))
+    assert not (result.output_dir / "hf_model" / "checkpoint.pt").exists()
     assert not (result.output_dir / "checkpoint.pt").exists()
 
 
