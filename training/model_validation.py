@@ -81,6 +81,13 @@ def _load_safetensors_file(path: Path) -> dict[str, torch.Tensor]:
     return _extract_state_dict(payload)
 
 
+def _list_safetensors_keys(path: Path) -> set[str]:
+    from safetensors import safe_open  # type: ignore
+
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        return set(handle.keys())
+
+
 def _load_safetensors_with_index(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
     index_payload = json.loads(path.read_text(encoding="utf-8"))
     weight_map = index_payload.get("weight_map", {})
@@ -99,6 +106,42 @@ def _load_safetensors_with_index(path: Path) -> tuple[dict[str, torch.Tensor], d
 
     missing_index_keys = sorted([key for key in weight_map.keys() if key not in state_dict])
     return state_dict, {
+        "index_path": str(path),
+        "shard_files": shard_files,
+        "missing_shard_files": missing_shards,
+        "missing_index_keys": missing_index_keys,
+        "weight_map": dict(weight_map),
+    }
+
+
+def _safetensors_index_summary(path: Path) -> dict[str, Any]:
+    index_payload = json.loads(path.read_text(encoding="utf-8"))
+    weight_map = index_payload.get("weight_map", {})
+    if not isinstance(weight_map, Mapping):
+        raise ValueError(f"Invalid safetensors index without weight_map at '{path}'")
+
+    shard_files = sorted(set(str(name) for name in weight_map.values()))
+    missing_shards: list[str] = []
+    missing_index_keys: list[str] = []
+
+    shard_key_union: set[str] = set()
+    for shard_name in shard_files:
+        shard_path = path.parent / shard_name
+        if not shard_path.exists():
+            missing_shards.append(shard_name)
+            continue
+        try:
+            shard_key_union.update(_list_safetensors_keys(shard_path))
+        except Exception:
+            # Keep the summary path robust even if a single shard is unreadable.
+            missing_index_keys.extend(key for key, name in weight_map.items() if str(name) == shard_name)
+
+    if not missing_index_keys:
+        missing_index_keys = sorted([key for key in weight_map.keys() if key not in shard_key_union])
+    else:
+        missing_index_keys = sorted(set(missing_index_keys))
+
+    return {
         "index_path": str(path),
         "shard_files": shard_files,
         "missing_shard_files": missing_shards,
@@ -175,12 +218,51 @@ def _artifact_summary(path_or_obj: Path | str | Mapping[str, Any]) -> dict[str, 
         return {"serialization_format": "in-memory mapping", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": []}
     path = Path(path_or_obj)
     if path.is_dir():
-        _, summary = _load_checkpoint_from_directory(path)
-        return summary
+        index_path = path / "model.safetensors.index.json"
+        if index_path.exists():
+            shard_summary = _safetensors_index_summary(index_path)
+            return {
+                "serialization_format": "sharded safetensors",
+                "hf_model_directory": True,
+                "config_present": (path / "config.json").exists(),
+                "tokenizer_files": [
+                    name
+                    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt", "spiece.model")
+                    if (path / name).exists()
+                ],
+                "safetensors_index": shard_summary,
+                "model_files": ["model.safetensors.index.json", *shard_summary["shard_files"]],
+            }
+        single_st = path / "model.safetensors"
+        if single_st.exists():
+            return {
+                "serialization_format": "single safetensors",
+                "hf_model_directory": True,
+                "config_present": (path / "config.json").exists(),
+                "tokenizer_files": [
+                    name for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json") if (path / name).exists()
+                ],
+                "safetensors_index": None,
+                "model_files": ["model.safetensors"],
+            }
+        for candidate in ("pytorch_model.bin", "checkpoint.pt", "model.pt", "model.bin"):
+            candidate_path = path / candidate
+            if candidate_path.exists():
+                return {
+                    "serialization_format": "pt/bin",
+                    "hf_model_directory": True,
+                    "config_present": (path / "config.json").exists(),
+                    "tokenizer_files": [
+                        name for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json") if (path / name).exists()
+                    ],
+                    "safetensors_index": None,
+                    "model_files": [candidate],
+                }
+        raise ValueError(f"No supported model file found in directory '{path}'")
     if path.suffix == ".safetensors":
         return {"serialization_format": "single safetensors", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": [path.name]}
     if path.name.endswith(".safetensors.index.json"):
-        _, shard_summary = _load_safetensors_with_index(path)
+        shard_summary = _safetensors_index_summary(path)
         return {"serialization_format": "sharded safetensors", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": shard_summary, "model_files": [path.name, *shard_summary["shard_files"]]}
     return {"serialization_format": "pt/bin", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": [path.name]}
 
