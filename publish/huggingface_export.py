@@ -16,6 +16,8 @@ from huggingface_hub import HfApi
 from huggingface_hub.utils import HfHubHTTPError
 
 from training.config_loader import PublishConfig, RuntimeConfig
+from training.model_validation import validate_model_checkpoint
+from publish.model_serialization import serialize_checkpoint_to_hf_directory
 
 MODEL_ARTIFACT_CANDIDATES = [
     "config.json",
@@ -74,8 +76,8 @@ def _build_model_card(runtime: RuntimeConfig, run_dir: Path) -> str:
             f"- Training seed: `{runtime.training.seed}`",
             "",
             "## Loading",
-            "`checkpoint.pt` is a repository-specific PyTorch state dict, not a guaranteed `save_pretrained()`-compatible Hugging Face model artifact.",
-            "Reload this checkpoint using this repository's training/model code.",
+            "Primary weights are exported as Hugging Face-compatible safetensors (single-file or sharded with index).",
+            "Optional `checkpoint.pt` is included only as a debug/backing artifact.",
         ]
     )
 
@@ -158,6 +160,25 @@ def publish_run_directory(
                 src = run_dir / name
                 if src.exists():
                     shutil.copy2(src, tmp_dir / name)
+            serialization = serialize_checkpoint_to_hf_directory(
+                run_dir=run_dir,
+                output_dir=tmp_dir,
+                runtime_config=runtime.to_serializable_dict(),
+                max_shard_size=publish_cfg.max_shard_size,
+            )
+            validation_result = validate_model_checkpoint(
+                base_checkpoint=run_dir / "checkpoint.pt",
+                trained_checkpoint=tmp_dir,
+                output_dir=run_dir,
+                runtime_config=runtime.to_serializable_dict(),
+                validation_cfg=runtime.validation,
+            )
+            print(
+                f"[publish] hf_model_dir='{serialization['model_dir']}' max_shard_size='{serialization['max_shard_size']}' "
+                f"validation_report='{validation_result.report_path}' status={'PASS' if validation_result.passed else 'FAIL'}"
+            )
+            if not validation_result.passed:
+                raise RuntimeError(f"Publish validation failed. Report: {validation_result.report_path}")
             if publish_cfg.include_checkpoint and _artifact_exists(run_dir, "checkpoint.pt"):
                 shutil.copy2(run_dir / "checkpoint.pt", tmp_dir / "checkpoint.pt")
             (tmp_dir / "README.md").write_text(_build_model_card(runtime, run_dir), encoding="utf-8")

@@ -28,6 +28,7 @@ def test_publish_defaults_disabled(tmp_path: Path) -> None:
     assert runtime.publish.enabled is False
     assert runtime.publish.hub_model_repo is None
     assert runtime.publish.hub_dataset_repo is None
+    assert runtime.publish.max_shard_size == "5GB"
 
 
 def test_publish_enabled_requires_repo_ids(tmp_path: Path) -> None:
@@ -67,9 +68,11 @@ def test_publish_not_called_unless_enabled(tmp_path: Path, monkeypatch: pytest.M
     assert called["publish"] == 0
 
 
-def test_publish_utility_builds_expected_payloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_utility_builds_hf_compatible_payloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = _base_raw(tmp_path)
     runtime = load_runtime_config_from_raw(raw)
+    runtime.validation.lora_expected = False
+    runtime.validation.recurrent_expected = False
     result = run_training_loop(components=build_training_components(runtime), run_name="publish_files", config_name="unit")
 
     monkeypatch.setenv("HF_TOKEN", "hf_test_token")
@@ -85,8 +88,12 @@ def test_publish_utility_builds_expected_payloads(tmp_path: Path, monkeypatch: p
             folder = Path(folder_path)
             if repo_type == "model":
                 assert (folder / "README.md").exists()
-                assert (folder / "checkpoint.pt").exists()
-                assert (folder / "metrics.json").exists()
+                assert (folder / "config.json").exists()
+                assert any(folder.glob("model*.safetensors"))
+                if (folder / "model.safetensors.index.json").exists():
+                    index = json.loads((folder / "model.safetensors.index.json").read_text(encoding="utf-8"))
+                    for filename in index.get("weight_map", {}).values():
+                        assert (folder / filename).exists()
             if repo_type == "dataset":
                 assert (folder / "README.md").exists()
                 assert (folder / "dataset_partitions.json").exists()
@@ -102,11 +109,13 @@ def test_publish_utility_builds_expected_payloads(tmp_path: Path, monkeypatch: p
     runtime.publish.hub_model_repo = "org/model-repo"
     runtime.publish.hub_dataset_repo = "org/dataset-repo"
     runtime.publish.private = True
+    runtime.publish.max_shard_size = "1MB"
     publish_run_directory(run_dir=result.output_dir, runtime=runtime, publish_cfg=runtime.publish)
     actions = [a for a, _ in uploads]
     assert "create_repo" in actions
     assert "upload_folder" in actions
     assert "dataset_push" in actions
+    assert (result.output_dir / "model_validation_report.md").exists()
 
 
 def test_gitignore_includes_secret_and_output_patterns() -> None:
