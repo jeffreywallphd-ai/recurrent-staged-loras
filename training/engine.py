@@ -295,15 +295,10 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     Failure modes:
         Raises ValueError on invalid external dataset specs or missing tokenizer.
     """
-    _set_seed(runtime.training.seed, runtime.training.deterministic)
-    model = build_model_from_variant(runtime.variant)
-    _validate_trainable_gradients(model)
-    _log_model_loading_diagnostics(runtime=runtime, model=model)
-    _validate_model_loading_for_training(runtime=runtime, model=model)
-    model.train()
-
     dataset_name = str(runtime.dataset["name"]).strip().lower()
     external_names = [str(item.get("name", "")).strip().lower() for item in runtime.dataset.get("external_evaluations", []) if isinstance(item, dict)]
+    _set_seed(runtime.training.seed, runtime.training.deterministic)
+
     # Tokenizer-backed datasets require text decoding for answer-span scoring and
     # deterministic char->token span construction.
     requires_tokenizer = dataset_name in {"metamath_qa"} or any(name in {"gsm8k", "math", "svamp"} for name in external_names)
@@ -323,10 +318,22 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     dataset_settings["seed"] = runtime.training.seed
     dataset_settings["max_seq_length"] = runtime.variant.base.max_seq_length
 
+    # On some Windows/Python/CUDA combinations, importing datasets/pyarrow after
+    # full CUDA model materialization can trigger a native crash. Build datasets
+    # first for HuggingFace-backed data sources so native dataset dependencies
+    # initialize before GPU-heavy model loading.
+    requires_hf_dataset_stack = dataset_name in {"metamath_qa"} or any(name in {"gsm8k", "math", "svamp"} for name in external_names)
+    synthetic_primary = dataset_name == "test_synthetic_stage_dataset"
+    if requires_hf_dataset_stack and not synthetic_primary:
+        dataset_vocab_size = int(getattr(tokenizer, "vocab_size", 32000)) if tokenizer is not None else 32000
+    else:
+        probe_model = build_model_from_variant(runtime.variant)
+        dataset_vocab_size = int(probe_model.base_model.vocab_size)
+
     bundle = build_train_eval_datasets(
         name=dataset_name,
         settings=dataset_settings,
-        vocab_size=model.base_model.vocab_size,
+        vocab_size=dataset_vocab_size,
         tokenizer=tokenizer,
     )
 
@@ -353,6 +360,12 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
         ext_bundle = build_external_eval_dataset(name=external_name, settings=settings, tokenizer=tokenizer)
         external_eval_loaders[external_name] = DataLoader(ext_bundle.eval, batch_size=runtime.training.batch_size, shuffle=False, collate_fn=collate_fn)
         external_summaries[external_name] = ext_bundle.preprocessing_summary
+
+    model = probe_model if (not requires_hf_dataset_stack or synthetic_primary) else build_model_from_variant(runtime.variant)
+    _validate_trainable_gradients(model)
+    _log_model_loading_diagnostics(runtime=runtime, model=model)
+    _validate_model_loading_for_training(runtime=runtime, model=model)
+    model.train()
 
     trainable_params = _count_trainable_params(model)
     trainable_tensors = [p for p in model.parameters() if p.requires_grad]
