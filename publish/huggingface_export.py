@@ -184,6 +184,9 @@ def publish_run_directory(
             raise RuntimeError(f"Publish validation failed. Report: {validation_result.report_path}")
         if publish_cfg.include_checkpoint and _artifact_exists(run_dir, "checkpoint.pt"):
             shutil.copy2(run_dir / "checkpoint.pt", hf_model_dir / "checkpoint.pt")
+        checkpoint_path = run_dir / "checkpoint.pt"
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
         (hf_model_dir / "README.md").write_text(_build_model_card(runtime, run_dir), encoding="utf-8")
         api.upload_folder(
             folder_path=str(hf_model_dir),
