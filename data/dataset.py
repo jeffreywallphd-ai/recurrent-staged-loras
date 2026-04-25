@@ -17,6 +17,8 @@ import hashlib
 import json
 import random
 import re
+import subprocess
+import sys
 
 import torch
 from torch.utils.data import Dataset
@@ -24,6 +26,39 @@ from torch.utils.data import Dataset
 from training.answer_eval import extract_numeric_values, normalize_answer_text
 
 Example = dict[str, torch.Tensor | str]
+
+
+def _ensure_hf_datasets_runtime_available() -> None:
+    """Fail fast with guidance when `datasets` import is unstable in-process.
+
+    On some Windows setups, importing `datasets` can trigger a native crash
+    while loading `pyarrow` instead of raising a regular Python exception.
+    Probing the import in a child process lets us keep the trainer process
+    alive and return an actionable error.
+    """
+    probe = subprocess.run(
+        [sys.executable, "-c", "import datasets"],  # noqa: S603
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return
+    details = (probe.stderr or probe.stdout or "").strip()
+    lines = [
+        "Hugging Face `datasets` failed a subprocess import check.",
+        "This typically indicates a broken native `pyarrow`/`pandas` wheel in the current Python environment.",
+        "Recreate the virtual environment and reinstall pinned dependencies, then verify with:",
+        "  python -X faulthandler -c \"import pyarrow, pandas, datasets\"",
+    ]
+    if details:
+        lines.extend(
+            [
+                "Subprocess output:",
+                details,
+            ]
+        )
+    raise RuntimeError("\n".join(lines))
 
 
 class SequenceDataset(Dataset[Example]):
@@ -149,6 +184,7 @@ def build_staged_examples_from_hf(
     split: str,
 ) -> tuple[list[Example], dict[str, int]]:
     """Build staged MetaMathQA examples with filtering diagnostics."""
+    _ensure_hf_datasets_runtime_available()
     from datasets import load_dataset  # type: ignore
 
     ds = load_dataset("meta-math/MetaMathQA", split=split, cache_dir=cache_dir)
@@ -266,6 +302,7 @@ def build_external_examples_from_hf(
     cache_dir: str | None,
 ) -> tuple[list[Example], dict[str, int]]:
     """Build answer-span-evaluable examples for external datasets."""
+    _ensure_hf_datasets_runtime_available()
     from datasets import load_dataset  # type: ignore
 
     key = dataset_name.lower()

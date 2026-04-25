@@ -1,6 +1,13 @@
+import pytest
 import torch
 
-from data.dataset import _build_staged_text, build_external_eval_dataset, build_train_eval_datasets, collate_token_sequences
+from data.dataset import (
+    _build_staged_text,
+    _ensure_hf_datasets_runtime_available,
+    build_external_eval_dataset,
+    build_train_eval_datasets,
+    collate_token_sequences,
+)
 from training.answer_eval import (
     NUMERIC_MULTI_VALUE_RULE,
     extract_numeric_values,
@@ -175,3 +182,14 @@ def test_external_dataset_subset_size_split_and_seed_are_respected(monkeypatch) 
     assert bundle.preprocessing_summary["dataset_split"] == "test"
     assert bundle.preprocessing_summary["dataset_seed"] == 9
     assert bundle.preprocessing_summary["dataset_subset_size"] == 3
+
+
+def test_hf_dataset_runtime_probe_surfaces_native_import_crashes(monkeypatch) -> None:
+    class _Proc:
+        returncode = 1
+        stderr = "Windows fatal exception: access violation"
+        stdout = ""
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Proc())
+    with pytest.raises(RuntimeError, match="failed a subprocess import check"):
+        _ensure_hf_datasets_runtime_available()
