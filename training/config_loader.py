@@ -87,7 +87,7 @@ class PublishConfig:
     private: bool = True
     commit_message: str | None = None
     include_checkpoint: bool = True
-    max_shard_size: str = "5GB"
+    max_shard_size: str = "4GB"
     include_metrics: bool = True
     include_dataset_partitions: bool = True
 
@@ -174,7 +174,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         private=bool(publish_raw.get("private", True)),
         commit_message=(str(publish_raw["commit_message"]) if publish_raw.get("commit_message") else None),
         include_checkpoint=bool(publish_raw.get("include_checkpoint", True)),
-        max_shard_size=str(publish_raw.get("max_shard_size", "5GB")),
+        max_shard_size=str(publish_raw.get("max_shard_size", "4GB")),
         include_metrics=bool(publish_raw.get("include_metrics", True)),
         include_dataset_partitions=bool(publish_raw.get("include_dataset_partitions", True)),
     )
