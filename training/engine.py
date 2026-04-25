@@ -32,7 +32,6 @@ from training.latent_cache import LATENT_CACHE_STATUS
 from training.loop import evaluate, run_training
 from training.run_metadata import RunMetadata
 from training.model_validation import validate_model_checkpoint
-from publish.huggingface_export import publish_run_directory
 
 
 @dataclass(slots=True)
@@ -202,6 +201,27 @@ def _write_dataset_partitions_artifact(*, out_dir: Path, components: TrainingCom
     path = out_dir / "dataset_partitions.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
+
+
+def _publish_if_enabled(*, out_dir: Path, runtime: RuntimeConfig) -> None:
+    if not runtime.publish.enabled:
+        return
+
+    try:
+        from publish.huggingface_export import publish_run_directory
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "Publishing failed due to missing dependencies (datasets/pyarrow). "
+            "Install optional publish extras, e.g. `pip install -r requirements-publish.txt`."
+        ) from exc
+
+    try:
+        publish_run_directory(run_dir=out_dir, runtime=runtime, publish_cfg=runtime.publish)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "Publishing failed due to missing dependencies (datasets/pyarrow). "
+            "Install optional publish extras, e.g. `pip install -r requirements-publish.txt`."
+        ) from exc
 
 
 REQUIRED_STUDY_METRICS = [
@@ -588,8 +608,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     if external_eval_metrics:
         answer_eval_diagnostics["external_eval"] = external_eval_metrics
     (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
-    if runtime.publish.enabled:
-        publish_run_directory(run_dir=out_dir, runtime=runtime, publish_cfg=runtime.publish)
+    _publish_if_enabled(out_dir=out_dir, runtime=runtime)
 
     return TrainResult(
         final_train_loss=metrics["final_train_loss"],
