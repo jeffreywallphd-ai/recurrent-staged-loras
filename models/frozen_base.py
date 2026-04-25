@@ -96,6 +96,8 @@ class FrozenBaseCausalLM(nn.Module):
             kwargs["quantization_config"] = quantization_config
 
         self.hf_model = AutoModelForCausalLM.from_pretrained(self.model_name, **kwargs)
+        if self.config.model_loading_mode == "full_gpu" and torch.cuda.is_available():
+            self.hf_model = self.hf_model.to("cuda")
         if self.config.gradient_checkpointing:
             self.hf_model.gradient_checkpointing_enable()
             if self.config.freeze_base:

@@ -77,7 +77,7 @@ def _build_model_card(runtime: RuntimeConfig, run_dir: Path) -> str:
             "",
             "## Loading",
             "Primary weights are exported as Hugging Face-compatible safetensors (single-file or sharded with index).",
-            "Optional `checkpoint.pt` is included only as a debug/backing artifact.",
+            "PyTorch checkpoint artifacts (`checkpoint.pt`) are removed after safetensors export+validation.",
         ]
     )
 
@@ -182,10 +182,7 @@ def publish_run_directory(
         )
         if not validation_result.passed:
             raise RuntimeError(f"Publish validation failed. Report: {validation_result.report_path}")
-        if publish_cfg.include_checkpoint and _artifact_exists(run_dir, "checkpoint.pt"):
-            shutil.copy2(run_dir / "checkpoint.pt", hf_model_dir / "checkpoint.pt")
-        checkpoint_path = run_dir / "checkpoint.pt"
-        if checkpoint_path.exists():
+        for checkpoint_path in sorted(run_dir.glob("**/checkpoint.pt")):
             checkpoint_path.unlink()
         (hf_model_dir / "README.md").write_text(_build_model_card(runtime, run_dir), encoding="utf-8")
         api.upload_folder(
