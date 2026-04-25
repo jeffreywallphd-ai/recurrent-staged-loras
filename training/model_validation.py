@@ -55,27 +55,115 @@ def _extract_state_dict(payload: Any) -> dict[str, torch.Tensor]:
     raise ValueError("Unable to extract state dict from checkpoint payload")
 
 
+def _load_safetensors_file(path: Path) -> dict[str, torch.Tensor]:
+    from safetensors.torch import load_file  # type: ignore
+
+    payload = load_file(str(path), device="cpu")
+    return _extract_state_dict(payload)
+
+
+def _load_safetensors_with_index(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    index_payload = json.loads(path.read_text(encoding="utf-8"))
+    weight_map = index_payload.get("weight_map", {})
+    if not isinstance(weight_map, Mapping):
+        raise ValueError(f"Invalid safetensors index without weight_map at '{path}'")
+
+    state_dict: dict[str, torch.Tensor] = {}
+    missing_shards: list[str] = []
+    shard_files = sorted(set(str(name) for name in weight_map.values()))
+    for shard_name in shard_files:
+        shard_path = path.parent / shard_name
+        if not shard_path.exists():
+            missing_shards.append(shard_name)
+            continue
+        state_dict.update(_load_safetensors_file(shard_path))
+
+    missing_index_keys = sorted([key for key in weight_map.keys() if key not in state_dict])
+    return state_dict, {
+        "index_path": str(path),
+        "shard_files": shard_files,
+        "missing_shard_files": missing_shards,
+        "missing_index_keys": missing_index_keys,
+        "weight_map": dict(weight_map),
+    }
+
+
+def _load_checkpoint_from_directory(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    index_path = path / "model.safetensors.index.json"
+    if index_path.exists():
+        state, shard_summary = _load_safetensors_with_index(index_path)
+        return state, {
+            "serialization_format": "sharded safetensors",
+            "hf_model_directory": True,
+            "config_present": (path / "config.json").exists(),
+            "tokenizer_files": [
+                name
+                for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.json", "merges.txt", "spiece.model")
+                if (path / name).exists()
+            ],
+            "safetensors_index": shard_summary,
+            "model_files": ["model.safetensors.index.json", *shard_summary["shard_files"]],
+        }
+
+    single_st = path / "model.safetensors"
+    if single_st.exists():
+        return _load_safetensors_file(single_st), {
+            "serialization_format": "single safetensors",
+            "hf_model_directory": True,
+            "config_present": (path / "config.json").exists(),
+            "tokenizer_files": [name for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json") if (path / name).exists()],
+            "safetensors_index": None,
+            "model_files": ["model.safetensors"],
+        }
+
+    for candidate in ("pytorch_model.bin", "checkpoint.pt", "model.pt", "model.bin"):
+        candidate_path = path / candidate
+        if candidate_path.exists():
+            payload = torch.load(candidate_path, map_location="cpu")
+            return _extract_state_dict(payload), {
+                "serialization_format": "pt/bin",
+                "hf_model_directory": True,
+                "config_present": (path / "config.json").exists(),
+                "tokenizer_files": [name for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json") if (path / name).exists()],
+                "safetensors_index": None,
+                "model_files": [candidate],
+            }
+
+    raise ValueError(f"No supported model file found in directory '{path}'")
+
+
 def load_checkpoint_state_dict(path_or_obj: Path | str | Mapping[str, Any]) -> dict[str, torch.Tensor]:
     if isinstance(path_or_obj, Mapping):
         return _extract_state_dict(path_or_obj)
 
     path = Path(path_or_obj)
     if path.is_dir():
-        for candidate in ("pytorch_model.bin", "model.safetensors"):
-            candidate_path = path / candidate
-            if not candidate_path.exists():
-                continue
-            if candidate.endswith(".safetensors"):
-                from safetensors.torch import load_file  # type: ignore
+        state, _ = _load_checkpoint_from_directory(path)
+        return state
 
-                payload = load_file(str(candidate_path), device="cpu")
-                return _extract_state_dict(payload)
-            payload = torch.load(candidate_path, map_location="cpu")
-            return _extract_state_dict(payload)
-        raise ValueError(f"No supported model file found in directory '{path}'")
+    if path.suffix == ".safetensors":
+        return _load_safetensors_file(path)
+    if path.name.endswith(".safetensors.index.json"):
+        state, _ = _load_safetensors_with_index(path)
+        return state
 
     payload = torch.load(path, map_location="cpu")
     return _extract_state_dict(payload)
+
+
+def _artifact_summary(path_or_obj: Path | str | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(path_or_obj, Mapping):
+        return {"serialization_format": "in-memory mapping", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": []}
+    path = Path(path_or_obj)
+    if path.is_dir():
+        _, summary = _load_checkpoint_from_directory(path)
+        return summary
+    if path.suffix == ".safetensors":
+        return {"serialization_format": "single safetensors", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": [path.name]}
+    if path.name.endswith(".safetensors.index.json"):
+        _, shard_summary = _load_safetensors_with_index(path)
+        return {"serialization_format": "sharded safetensors", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": shard_summary, "model_files": [path.name, *shard_summary["shard_files"]]}
+    return {"serialization_format": "pt/bin", "hf_model_directory": False, "config_present": False, "tokenizer_files": [], "safetensors_index": None, "model_files": [path.name]}
 
 
 def _normalize_key(key: str) -> str:
@@ -113,11 +201,9 @@ def _lookup_nested(mapping: Mapping[str, Any], dotted_key: str) -> Any:
 
 
 def _default_expectation(*, runtime_config: Mapping[str, Any], validation_cfg: ModelValidationConfig) -> ValidationExpectation:
-    model_cfg = runtime_config.get("variant", {}).get("base", {}) if isinstance(runtime_config.get("variant"), Mapping) else {}
     refiner_cfg = runtime_config.get("variant", {}).get("refiner", {}) if isinstance(runtime_config.get("variant"), Mapping) else {}
     standard_lora_cfg = runtime_config.get("variant", {}).get("standard_lora", {}) if isinstance(runtime_config.get("variant"), Mapping) else {}
     refiner_adapter_cfg = runtime_config.get("variant", {}).get("refiner_adapter", {}) if isinstance(runtime_config.get("variant"), Mapping) else {}
-    del model_cfg
 
     inferred_lora = bool(standard_lora_cfg.get("enabled", False) or refiner_adapter_cfg.get("enabled", False))
     inferred_recurrent = bool(refiner_cfg.get("enabled", False))
@@ -128,6 +214,33 @@ def _default_expectation(*, runtime_config: Mapping[str, Any], validation_cfg: M
         lora_key_patterns=list(validation_cfg.lora_key_patterns),
         recurrent_key_patterns=list(validation_cfg.recurrent_key_patterns),
     )
+
+
+def _merged_lora_metadata_present(trained_path: Path | str | Mapping[str, Any], runtime_config: Mapping[str, Any], expectation: ValidationExpectation) -> bool:
+    if expectation.lora_merged_before_save:
+        return True
+    if isinstance(trained_path, Mapping):
+        return False
+    path = Path(trained_path)
+    if path.is_dir():
+        for metadata_name in ("serialization_metadata.json", "training_metadata.json", "metadata.json"):
+            candidate = path / metadata_name
+            if candidate.exists():
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if bool(payload.get("lora_merged", False)):
+                    return True
+        cfg_path = path / "config.json"
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                if bool(cfg.get("lora_merged", False)):
+                    return True
+            except Exception:
+                pass
+    return bool(_lookup_nested(runtime_config, "validation.lora_merged_before_save"))
 
 
 def validate_model_checkpoint(*,
@@ -143,6 +256,9 @@ def validate_model_checkpoint(*,
     base_state = _normalize_state_dict(load_checkpoint_state_dict(base_checkpoint))
     trained_state = _normalize_state_dict(load_checkpoint_state_dict(trained_checkpoint))
     expectation = _default_expectation(runtime_config=runtime_config, validation_cfg=validation_cfg)
+
+    base_summary = _artifact_summary(base_checkpoint)
+    trained_summary = _artifact_summary(trained_checkpoint)
 
     base_keys = set(base_state)
     trained_keys = set(trained_state)
@@ -178,14 +294,39 @@ def validate_model_checkpoint(*,
         for dotted, expected in config_expectations.items()
     }
 
+    adapter_files: list[str] = []
+    merged_lora_metadata = _merged_lora_metadata_present(trained_checkpoint, runtime_config, expectation)
+    if not isinstance(trained_checkpoint, Mapping):
+        trained_path = Path(trained_checkpoint)
+        if trained_path.is_dir():
+            adapter_files = [
+                name
+                for name in (
+                    "adapter_config.json",
+                    "adapter_model.safetensors",
+                    "adapter_model.safetensors.index.json",
+                )
+                if (trained_path / name).exists()
+            ]
+
     missing_required_items: list[str] = []
-    if expectation.lora_expected and not expectation.lora_merged_before_save and not lora_keys:
-        missing_required_items.append("Expected LoRA keys were not found in the trained checkpoint")
+    if expectation.lora_expected and not lora_keys and not merged_lora_metadata and not adapter_files:
+        missing_required_items.append("Expected LoRA keys/files were not found, and no merged-LoRA metadata was provided")
     if expectation.recurrent_expected and not recurrent_keys:
         missing_required_items.append("Expected recurrent-layer keys were not found in the trained checkpoint")
     for key, cmp in config_comparison.items():
         if not bool(cmp["matches"]):
             missing_required_items.append(f"Config expectation mismatch for '{key}'")
+
+    if trained_summary.get("hf_model_directory"):
+        if not trained_summary.get("config_present"):
+            missing_required_items.append("HF compatibility check failed: missing config.json")
+        idx = trained_summary.get("safetensors_index")
+        if isinstance(idx, Mapping):
+            if idx.get("missing_shard_files"):
+                missing_required_items.append("HF compatibility check failed: safetensors index references missing shard files")
+            if idx.get("missing_index_keys"):
+                missing_required_items.append("HF compatibility check failed: index references keys missing from shard files")
 
     parameter_summary = {
         "base_only_parameters": int(sum(_numel(base_state[k]) for k in removed_keys)),
@@ -199,6 +340,7 @@ def validate_model_checkpoint(*,
     report_path = out_dir / "model_validation_report.md"
     diff_path = out_dir / "model_validation_diff.json" if validation_cfg.write_json_diff else None
 
+    shard_summary = trained_summary.get("safetensors_index") if isinstance(trained_summary.get("safetensors_index"), Mapping) else {}
     summary_lines = [
         "# Model Validation Report",
         "",
@@ -208,6 +350,31 @@ def validate_model_checkpoint(*,
         f"- Trained checkpoint path: `{trained_checkpoint}`",
         f"- Run output path: `{out_dir}`",
         "",
+        "## Serialization Format",
+        f"- Base: {base_summary.get('serialization_format')}",
+        f"- Trained: {trained_summary.get('serialization_format')}",
+        f"- Trained is HF model directory: {'yes' if trained_summary.get('hf_model_directory') else 'no'}",
+        "",
+        "## Shard Summary",
+        f"- Shard count: {len(shard_summary.get('shard_files', [])) if shard_summary else 0}",
+        f"- Total tensor count: {len(trained_keys)}",
+        f"- Index file path: `{shard_summary.get('index_path') if shard_summary else ''}`",
+        f"- Missing shard files: `{shard_summary.get('missing_shard_files', []) if shard_summary else []}`",
+        "",
+        "## HF Compatibility Check",
+        f"- config.json present: {'yes' if trained_summary.get('config_present') else 'no'}",
+        f"- tokenizer files present: `{trained_summary.get('tokenizer_files', [])}`",
+        f"- safetensors index valid: {'yes' if not shard_summary or (not shard_summary.get('missing_shard_files') and not shard_summary.get('missing_index_keys')) else 'no'}",
+        f"- model files detected: `{trained_summary.get('model_files', [])}`",
+        "",
+        "## LoRA Handling",
+        f"- unmerged adapter keys found: {len(lora_keys)}",
+        f"- adapter files found: `{adapter_files}`",
+        f"- merged LoRA metadata found: {'yes' if merged_lora_metadata else 'no'}",
+        "",
+        "## Recurrent Layer Validation",
+        f"- expected recurrent keys/config found: {'yes' if (not expectation.recurrent_expected or bool(recurrent_keys)) else 'no'}",
+        "",
         "## Expected Additions",
         f"- LoRA expected: {'yes' if expectation.lora_expected else 'no'}",
         f"- Recurrent expected: {'yes' if expectation.recurrent_expected else 'no'}",
@@ -215,7 +382,7 @@ def validate_model_checkpoint(*,
         f"- LoRA key patterns: `{expectation.lora_key_patterns}`",
         f"- Recurrent key patterns: `{expectation.recurrent_key_patterns}`",
         "",
-        "## Checkpoint Key Diff",
+        "## Diff View",
         f"- Added keys (`+`): {len(added_keys)}",
     ]
     summary_lines.extend([f"  - `+ {key}`" for key in added_keys])
@@ -226,18 +393,8 @@ def validate_model_checkpoint(*,
     summary_lines.append(f"- Unchanged shared keys (summarized): {unchanged_shared_count}")
     summary_lines.extend([
         "",
-        "## Detected LoRA Keys",
-        f"- Count: {len(lora_keys)}",
+        "## Config Comparison",
     ])
-    summary_lines.extend([f"  - `{key}`" for key in lora_keys])
-    summary_lines.extend([
-        "",
-        "## Detected Recurrent Keys",
-        f"- Count: {len(recurrent_keys)}",
-    ])
-    summary_lines.extend([f"  - `{key}`" for key in recurrent_keys])
-
-    summary_lines.extend(["", "## Config Comparison"])
     for key, cmp in config_comparison.items():
         summary_lines.append(f"- `{key}` expected=`{cmp['expected']}` actual=`{cmp['actual']}` match=`{cmp['matches']}`")
 
@@ -267,12 +424,18 @@ def validate_model_checkpoint(*,
             "output_dir": str(out_dir),
             "expected": asdict(expectation),
             "missing_required_items": missing_required_items,
+            "serialization": {
+                "base": base_summary,
+                "trained": trained_summary,
+            },
             "added_keys": added_keys,
             "removed_keys": removed_keys,
             "shape_changes": shape_changes,
             "unchanged_shared_key_count": unchanged_shared_count,
             "lora_keys": lora_keys,
             "recurrent_keys": recurrent_keys,
+            "adapter_files": adapter_files,
+            "merged_lora_metadata": merged_lora_metadata,
             "config_comparison": config_comparison,
             "parameter_summary": parameter_summary,
         }
