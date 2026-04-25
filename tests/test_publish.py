@@ -28,7 +28,7 @@ def test_publish_defaults_disabled(tmp_path: Path) -> None:
     assert runtime.publish.enabled is False
     assert runtime.publish.hub_model_repo is None
     assert runtime.publish.hub_dataset_repo is None
-    assert runtime.publish.max_shard_size == "5GB"
+    assert runtime.publish.max_shard_size == "4GB"
 
 
 def test_publish_enabled_requires_repo_ids(tmp_path: Path) -> None:
@@ -116,6 +116,8 @@ def test_publish_utility_builds_hf_compatible_payloads(tmp_path: Path, monkeypat
     assert "upload_folder" in actions
     assert "dataset_push" in actions
     assert (result.output_dir / "model_validation_report.md").exists()
+    assert (result.output_dir / "hf_model").exists()
+    assert any((result.output_dir / "hf_model").glob("model*.safetensors"))
 
 
 def test_gitignore_includes_secret_and_output_patterns() -> None:

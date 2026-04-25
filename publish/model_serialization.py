@@ -114,7 +114,7 @@ def serialize_checkpoint_to_hf_directory(
     run_dir: Path,
     output_dir: Path,
     runtime_config: Mapping[str, Any],
-    max_shard_size: str = "5GB",
+    max_shard_size: str = "4GB",
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_dir / "checkpoint.pt"

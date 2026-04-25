@@ -150,44 +150,47 @@ def publish_run_directory(
 
     if resolved_model_repo:
         api.create_repo(repo_id=resolved_model_repo, private=resolved_private, repo_type="model", exist_ok=True)
-        with TemporaryDirectory(prefix="hf_model_export_") as tmp:
-            tmp_dir = Path(tmp)
-            for name in MODEL_ARTIFACT_CANDIDATES:
-                if name == "metrics.json" and not publish_cfg.include_metrics:
-                    continue
-                if name == "answer_eval_diagnostics.json" and not publish_cfg.include_metrics:
-                    continue
-                src = run_dir / name
-                if src.exists():
-                    shutil.copy2(src, tmp_dir / name)
-            serialization = serialize_checkpoint_to_hf_directory(
-                run_dir=run_dir,
-                output_dir=tmp_dir,
-                runtime_config=runtime.to_serializable_dict(),
-                max_shard_size=publish_cfg.max_shard_size,
-            )
-            validation_result = validate_model_checkpoint(
-                base_checkpoint=run_dir / "checkpoint.pt",
-                trained_checkpoint=tmp_dir,
-                output_dir=run_dir,
-                runtime_config=runtime.to_serializable_dict(),
-                validation_cfg=runtime.validation,
-            )
-            print(
-                f"[publish] hf_model_dir='{serialization['model_dir']}' max_shard_size='{serialization['max_shard_size']}' "
-                f"validation_report='{validation_result.report_path}' status={'PASS' if validation_result.passed else 'FAIL'}"
-            )
-            if not validation_result.passed:
-                raise RuntimeError(f"Publish validation failed. Report: {validation_result.report_path}")
-            if publish_cfg.include_checkpoint and _artifact_exists(run_dir, "checkpoint.pt"):
-                shutil.copy2(run_dir / "checkpoint.pt", tmp_dir / "checkpoint.pt")
-            (tmp_dir / "README.md").write_text(_build_model_card(runtime, run_dir), encoding="utf-8")
-            api.upload_folder(
-                folder_path=str(tmp_dir),
-                repo_id=resolved_model_repo,
-                repo_type="model",
-                commit_message=resolved_message,
-            )
+        hf_model_dir = run_dir / "hf_model"
+        if hf_model_dir.exists():
+            shutil.rmtree(hf_model_dir)
+        hf_model_dir.mkdir(parents=True, exist_ok=True)
+
+        for name in MODEL_ARTIFACT_CANDIDATES:
+            if name == "metrics.json" and not publish_cfg.include_metrics:
+                continue
+            if name == "answer_eval_diagnostics.json" and not publish_cfg.include_metrics:
+                continue
+            src = run_dir / name
+            if src.exists():
+                shutil.copy2(src, hf_model_dir / name)
+        serialization = serialize_checkpoint_to_hf_directory(
+            run_dir=run_dir,
+            output_dir=hf_model_dir,
+            runtime_config=runtime.to_serializable_dict(),
+            max_shard_size=publish_cfg.max_shard_size,
+        )
+        validation_result = validate_model_checkpoint(
+            base_checkpoint=run_dir / "checkpoint.pt",
+            trained_checkpoint=hf_model_dir,
+            output_dir=run_dir,
+            runtime_config=runtime.to_serializable_dict(),
+            validation_cfg=runtime.validation,
+        )
+        print(
+            f"[publish] hf_model_dir='{serialization['model_dir']}' max_shard_size='{serialization['max_shard_size']}' "
+            f"validation_report='{validation_result.report_path}' status={'PASS' if validation_result.passed else 'FAIL'}"
+        )
+        if not validation_result.passed:
+            raise RuntimeError(f"Publish validation failed. Report: {validation_result.report_path}")
+        if publish_cfg.include_checkpoint and _artifact_exists(run_dir, "checkpoint.pt"):
+            shutil.copy2(run_dir / "checkpoint.pt", hf_model_dir / "checkpoint.pt")
+        (hf_model_dir / "README.md").write_text(_build_model_card(runtime, run_dir), encoding="utf-8")
+        api.upload_folder(
+            folder_path=str(hf_model_dir),
+            repo_id=resolved_model_repo,
+            repo_type="model",
+            commit_message=resolved_message,
+        )
 
     if resolved_dataset_repo and publish_cfg.include_dataset_partitions:
         partitions_path = run_dir / "dataset_partitions.json"

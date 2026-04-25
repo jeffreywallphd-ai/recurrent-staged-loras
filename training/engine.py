@@ -368,9 +368,6 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     (out_dir / "config.json").write_text(json.dumps(runtime.to_serializable_dict(), indent=2), encoding="utf-8")
     (out_dir / "dataset_preprocessing_summary.json").write_text(json.dumps(components.preprocessing_summary, indent=2), encoding="utf-8")
     _write_dataset_partitions_artifact(out_dir=out_dir, components=components, runtime=runtime)
-    base_checkpoint_path = out_dir / "base_checkpoint.pt"
-    torch.save({"model_state_dict": components.model.state_dict()}, base_checkpoint_path)
-
     base_max_steps = int(runtime.training.max_steps)
     recurrence_steps = int(runtime.variant.refiner.num_steps if runtime.variant.refiner.enabled else 1)
     effective_forward_passes = recurrence_steps
@@ -413,7 +410,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
     if runtime.validation.enabled:
         validation_result = validate_model_checkpoint(
-            base_checkpoint=base_checkpoint_path,
+            base_checkpoint=checkpoint_path,
             trained_checkpoint=checkpoint_path,
             output_dir=out_dir,
             runtime_config=runtime.to_serializable_dict(),
