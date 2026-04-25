@@ -10,8 +10,27 @@ import json
 import torch
 
 
-DEFAULT_LORA_KEY_PATTERNS = ["lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B", "lora"]
-DEFAULT_RECURRENT_KEY_PATTERNS = ["recurrent", "recurrence", "rnn", "recurrent_layer", "recurrent_projection", "recurrent_gate"]
+DEFAULT_LORA_KEY_PATTERNS = [
+    "lora_A",
+    "lora_B",
+    "lora_embedding_A",
+    "lora_embedding_B",
+    "lora",
+    # Internal recurrent adapters are modeled as a step-aware adapter bank;
+    # include this namespace so stage-specialized runs validate without forcing
+    # PEFT-specific key names.
+    "adapter_bank.adapters",
+]
+DEFAULT_RECURRENT_KEY_PATTERNS = [
+    "recurrent",
+    "recurrence",
+    "rnn",
+    "recurrent_layer",
+    "recurrent_projection",
+    "recurrent_gate",
+    # In this repository recurrent modules are rooted at `refiner.*`.
+    "refiner.",
+]
 
 
 @dataclass(slots=True)
@@ -216,6 +235,13 @@ def _default_expectation(*, runtime_config: Mapping[str, Any], validation_cfg: M
     )
 
 
+def _runtime_any_lora_enabled(runtime_config: Mapping[str, Any]) -> bool:
+    variant_cfg = runtime_config.get("variant", {}) if isinstance(runtime_config.get("variant"), Mapping) else {}
+    standard_lora_cfg = variant_cfg.get("standard_lora", {}) if isinstance(variant_cfg, Mapping) else {}
+    refiner_adapter_cfg = variant_cfg.get("refiner_adapter", {}) if isinstance(variant_cfg, Mapping) else {}
+    return bool(standard_lora_cfg.get("enabled", False) or refiner_adapter_cfg.get("enabled", False))
+
+
 def _merged_lora_metadata_present(trained_path: Path | str | Mapping[str, Any], runtime_config: Mapping[str, Any], expectation: ValidationExpectation) -> bool:
     if expectation.lora_merged_before_save:
         return True
@@ -279,19 +305,27 @@ def validate_model_checkpoint(*,
     lora_keys = sorted([key for key in trained_keys if _matches_any_pattern(key, expectation.lora_key_patterns)])
     recurrent_keys = sorted([key for key in trained_keys if _matches_any_pattern(key, expectation.recurrent_key_patterns)])
 
-    config_expectations = {
-        "variant.refiner.enabled": expectation.recurrent_expected,
-        "variant.standard_lora.enabled": expectation.lora_expected,
-        "variant.base.architecture_type": _lookup_nested(runtime_config, "variant.base.architecture_type"),
-        "variant.refiner.num_steps": _lookup_nested(runtime_config, "variant.refiner.num_steps"),
-    }
     config_comparison = {
-        dotted: {
-            "expected": expected,
-            "actual": _lookup_nested(runtime_config, dotted),
-            "matches": _lookup_nested(runtime_config, dotted) == expected if expected is not None else _lookup_nested(runtime_config, dotted) is not None,
-        }
-        for dotted, expected in config_expectations.items()
+        "variant.refiner.enabled": {
+            "expected": expectation.recurrent_expected,
+            "actual": _lookup_nested(runtime_config, "variant.refiner.enabled"),
+            "matches": _lookup_nested(runtime_config, "variant.refiner.enabled") == expectation.recurrent_expected,
+        },
+        "variant.any_lora.enabled": {
+            "expected": expectation.lora_expected,
+            "actual": _runtime_any_lora_enabled(runtime_config),
+            "matches": _runtime_any_lora_enabled(runtime_config) == expectation.lora_expected,
+        },
+        "variant.base.architecture_type": {
+            "expected": _lookup_nested(runtime_config, "variant.base.architecture_type"),
+            "actual": _lookup_nested(runtime_config, "variant.base.architecture_type"),
+            "matches": _lookup_nested(runtime_config, "variant.base.architecture_type") is not None,
+        },
+        "variant.refiner.num_steps": {
+            "expected": _lookup_nested(runtime_config, "variant.refiner.num_steps"),
+            "actual": _lookup_nested(runtime_config, "variant.refiner.num_steps"),
+            "matches": _lookup_nested(runtime_config, "variant.refiner.num_steps") is not None,
+        },
     }
 
     adapter_files: list[str] = []

@@ -20,6 +20,18 @@ def _runtime_config(*, lora_enabled: bool, recurrent_enabled: bool, lora_merged_
     }
 
 
+def _runtime_config_with_refiner_adapter_only(*, recurrent_enabled: bool) -> dict[str, object]:
+    return {
+        "variant": {
+            "base": {"architecture_type": "dense"},
+            "standard_lora": {"enabled": False},
+            "refiner_adapter": {"enabled": True},
+            "refiner": {"enabled": recurrent_enabled, "num_steps": 3 if recurrent_enabled else 1},
+        },
+        "validation": {"lora_merged_before_save": False},
+    }
+
+
 def _save(path: Path, payload: object) -> Path:
     torch.save(payload, path)
     return path
@@ -141,6 +153,32 @@ def test_validation_fails_when_expected_lora_or_recurrent_missing(tmp_path: Path
     assert not result.passed
     assert any("lora" in item.lower() for item in result.missing_required_items)
     assert any("recurrent" in item.lower() for item in result.missing_required_items)
+
+
+def test_validation_uses_any_lora_flag_for_config_check(tmp_path: Path) -> None:
+    base = _save(tmp_path / "base.pt", {"model_state_dict": {"layer.weight": torch.zeros(2, 2)}})
+    trained = _save(
+        tmp_path / "trained.pt",
+        {
+            "model_state_dict": {
+                "layer.weight": torch.zeros(2, 2),
+                "refiner.w_in.weight": torch.zeros(2, 2),
+                "refiner.w_out.weight": torch.zeros(2, 2),
+                "refiner.adapter_bank.adapters.0.down.weight": torch.zeros(1, 2),
+                "refiner.adapter_bank.adapters.0.up.weight": torch.zeros(2, 1),
+            }
+        },
+    )
+    result = validate_model_checkpoint(
+        base_checkpoint=base,
+        trained_checkpoint=trained,
+        output_dir=tmp_path,
+        runtime_config=_runtime_config_with_refiner_adapter_only(recurrent_enabled=True),
+        validation_cfg=ModelValidationConfig(),
+    )
+    assert result.passed
+    report_text = (tmp_path / "model_validation_report.md").read_text(encoding="utf-8")
+    assert "variant.any_lora.enabled" in report_text
 
 
 def test_report_file_written_to_output_folder(tmp_path: Path) -> None:
