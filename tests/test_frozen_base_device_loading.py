@@ -36,3 +36,30 @@ def test_full_gpu_loading_prefers_cuda_when_available(monkeypatch) -> None:
     model = FrozenBaseCausalLM(cfg)
     assert model.hf_model is not None
     assert model.hf_model.moved_to == "cuda"
+
+
+def test_full_gpu_loading_logs_cpu_reason_when_cuda_unavailable(monkeypatch, capsys) -> None:
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(hidden_size=16, vocab_size=32)
+
+        def parameters(self):
+            return iter([])
+
+    class _FakeAutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(*_args, **_kwargs):
+            return _FakeModel()
+
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(AutoModelForCausalLM=_FakeAutoModelForCausalLM))
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+
+    cfg = BaseModelConfig(
+        model_name="fake/model",
+        model_loading_mode="full_gpu",
+        device_map="auto",
+    )
+    FrozenBaseCausalLM(cfg)
+    captured = capsys.readouterr()
+    assert "selection=cpu" in captured.out
+    assert "torch.cuda.is_available() is false" in captured.out

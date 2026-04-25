@@ -50,6 +50,17 @@ def _default_output_dir() -> str:
     return "outputs/default"
 
 
+def _log_output_dir_resolution(*, resolved_dir: str, source: str, hf_home_raw: str | None, hf_home_trimmed: str) -> None:
+    raw_repr = repr(hf_home_raw) if hf_home_raw is not None else "None"
+    print(
+        "[output] "
+        f"resolved_dir='{resolved_dir}' "
+        f"source={source} "
+        f"hf_home_raw={raw_repr} "
+        f"hf_home_trimmed='{hf_home_trimmed}'"
+    )
+
+
 SHARED_OUTPUT_DEFAULTS: dict[str, Any] = {"dir": _default_output_dir()}
 SUPPORTED_COMPUTE_CONTROL_MODES = {"effective_forward_passes", "wall_time", "tokens"}
 SUPPORTED_PRIMARY_DATASETS = {"metamath_qa", "test_synthetic_stage_dataset"}
@@ -66,8 +77,25 @@ def _merge_runtime_defaults(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     settings.update(dict(dataset_raw.get("settings", {})))
     external_evaluations = list(dataset_raw.get("external_evaluations", SHARED_DATASET_DEFAULTS["external_evaluations"]))
 
-    output_raw = {"dir": _default_output_dir()}
-    output_raw.update(dict(raw.get("output", {})))
+    default_output_dir = _default_output_dir()
+    output_raw = {"dir": default_output_dir}
+    user_output_raw = dict(raw.get("output", {}))
+    output_raw.update(user_output_raw)
+    hf_home_raw = os.getenv("HF_HOME")
+    hf_home_trimmed = hf_home_raw.strip() if hf_home_raw else ""
+    resolved_dir = str(output_raw.get("dir", default_output_dir))
+    if "dir" in user_output_raw:
+        source = "runtime.output.dir (explicit override)"
+    elif hf_home_trimmed:
+        source = "default from HF_HOME/generated_models"
+    else:
+        source = "default fallback outputs/default (HF_HOME not set)"
+    _log_output_dir_resolution(
+        resolved_dir=resolved_dir,
+        source=source,
+        hf_home_raw=hf_home_raw,
+        hf_home_trimmed=hf_home_trimmed,
+    )
     return {"name": dataset_name, "settings": settings, "external_evaluations": external_evaluations}, output_raw
 
 
