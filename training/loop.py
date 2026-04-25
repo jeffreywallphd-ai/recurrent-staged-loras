@@ -75,6 +75,13 @@ def _safe_perplexity(loss: float) -> float:
     return float(torch.exp(torch.tensor(min(loss, 20.0), dtype=torch.float64)).item())
 
 
+def _format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def _masked_ce(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     vocab = logits.shape[-1]
     per_tok = F.cross_entropy(logits.reshape(-1, vocab), labels.reshape(-1), reduction="none").reshape_as(labels)
@@ -179,6 +186,7 @@ def train_epoch(
     global_step_start: int,
     eval_enabled: bool,
     eval_interval_steps: int,
+    log_interval_steps: int,
     eval_loader: DataLoader[dict[str, torch.Tensor | list[str]]],
     tokenizer: Any | None,
     max_train_tokens: int | None = None,
@@ -196,6 +204,8 @@ def train_epoch(
     wall = 0.0
     interval_results: list[EvalResult] = []
     input_device = _resolve_input_device(model)
+    epoch_start = perf_counter()
+    last_logged_step = global_step_start
 
     for batch in dataloader:
         if step >= max_steps:
@@ -218,9 +228,45 @@ def train_epoch(
             optimizer.step()
         step += 1
         wall += perf_counter() - start
+        should_log = (
+            (log_interval_steps > 0 and step % log_interval_steps == 0)
+            or step >= max_steps
+        )
+        if should_log:
+            elapsed = perf_counter() - epoch_start
+            pct_complete = 100.0 * float(step) / float(max(max_steps, 1))
+            tok_per_sec = float(tokens_seen) / elapsed if elapsed > 0 else 0.0
+            log_line = (
+                f"[train] step {step}/{max_steps} ({pct_complete:.1f}%) "
+                f"loss={losses[-1]:.4f} tokens={tokens_seen} tok/s={tok_per_sec:.1f} elapsed={_format_elapsed(elapsed)}"
+            )
+            if torch.cuda.is_available():
+                mem_alloc = torch.cuda.memory_allocated() / 1e9
+                mem_reserved = torch.cuda.memory_reserved() / 1e9
+                log_line += f" gpu_alloc={mem_alloc:.2f}GB gpu_reserved={mem_reserved:.2f}GB"
+            print(log_line)
+            last_logged_step = step
 
         if eval_enabled and eval_interval_steps > 0 and (step % eval_interval_steps == 0):
-            interval_results.append(evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer))
+            print(f"[eval] starting evaluation at step {step}")
+            eval_start = perf_counter()
+            eval_result = evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer)
+            print(f"[eval] completed in {perf_counter() - eval_start:.2f}s loss={eval_result.loss:.4f}")
+            interval_results.append(eval_result)
+
+    if step > global_step_start and last_logged_step != step:
+        elapsed = perf_counter() - epoch_start
+        pct_complete = 100.0 * float(step) / float(max(max_steps, 1))
+        tok_per_sec = float(tokens_seen) / elapsed if elapsed > 0 else 0.0
+        log_line = (
+            f"[train] step {step}/{max_steps} ({pct_complete:.1f}%) "
+            f"loss={losses[-1]:.4f} tokens={tokens_seen} tok/s={tok_per_sec:.1f} elapsed={_format_elapsed(elapsed)}"
+        )
+        if torch.cuda.is_available():
+            mem_alloc = torch.cuda.memory_allocated() / 1e9
+            mem_reserved = torch.cuda.memory_reserved() / 1e9
+            log_line += f" gpu_alloc={mem_alloc:.2f}GB gpu_reserved={mem_reserved:.2f}GB"
+        print(log_line)
 
     avg = float(sum(losses) / len(losses)) if losses else float("nan")
     return avg, step - global_step_start, wall, tokens_seen, interval_results
@@ -443,6 +489,7 @@ def run_training(
     max_steps: int,
     eval_interval_steps: int,
     eval_enabled: bool,
+    log_interval_steps: int = 50,
     tokenizer: Any | None = None,
     max_train_tokens: int | None = None,
     max_wall_time_seconds: float | None = None,
@@ -469,6 +516,7 @@ def run_training(
             global_step_start=global_steps,
             eval_enabled=eval_enabled,
             eval_interval_steps=eval_interval_steps,
+            log_interval_steps=log_interval_steps,
             eval_loader=eval_loader,
             tokenizer=tokenizer,
             max_train_tokens=max_train_tokens,
@@ -491,7 +539,11 @@ def run_training(
         # already produced one at an exact interval boundary.
         needs_final_eval = not eval_results or (eval_interval_steps <= 0 or global_steps % eval_interval_steps != 0)
         if needs_final_eval:
-            eval_results.append(evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer))
+            print(f"[eval] starting evaluation at step {global_steps}")
+            eval_start = perf_counter()
+            eval_result = evaluate(model=model, dataloader=eval_loader, tokenizer=tokenizer)
+            print(f"[eval] completed in {perf_counter() - eval_start:.2f}s loss={eval_result.loss:.4f}")
+            eval_results.append(eval_result)
 
     last_eval = eval_results[-1]
     best_eval_loss = min(x.loss for x in eval_results)

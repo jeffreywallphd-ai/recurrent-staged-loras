@@ -162,6 +162,7 @@ class TrainingConfig:
     weight_decay: float = 0.0
     seed: int = 0
     eval_interval_steps: int = 100
+    log_interval_steps: int = 50
     checkpoint_interval_steps: int = 100
     eval_enabled: bool = True
     deterministic: bool = False
@@ -244,6 +245,7 @@ def load_runtime_config_from_raw(raw: dict[str, Any]) -> RuntimeConfig:
         weight_decay=float(training_raw.get("weight_decay", 0.0)),
         seed=int(training_raw.get("seed", 0)),
         eval_interval_steps=int(training_raw.get("eval_interval_steps", 100)),
+        log_interval_steps=int(training_raw.get("log_interval_steps", training_raw.get("eval_interval_steps", 50))),
         checkpoint_interval_steps=int(training_raw.get("checkpoint_interval_steps", 100)),
         eval_enabled=bool(training_raw.get("eval_enabled", True)),
         deterministic=bool(training_raw.get("deterministic", False)),

@@ -361,6 +361,39 @@ def test_move_batch_to_device_supports_cuda() -> None:
     assert moved["answer_text"] == ["x"]
 
 
+def test_training_progress_logging_emits_interval_and_final_updates(capsys: pytest.CaptureFixture[str]) -> None:
+    model = build_training_components(_runtime(Path("/tmp"))).model
+    examples = [
+        {
+            "input_ids": torch.tensor([1, 2, 3, 4], dtype=torch.long),
+            "labels": torch.tensor([1, 2, 3, 4], dtype=torch.long),
+            "stage1_mask": torch.tensor([1, 0, 0, 0], dtype=torch.bool),
+            "stage2_mask": torch.tensor([0, 1, 0, 0], dtype=torch.bool),
+            "stage3_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_mask": torch.tensor([0, 0, 1, 1], dtype=torch.bool),
+            "answer_text": "3 4",
+            "answer_text_normalized": "3 4",
+        }
+        for _ in range(4)
+    ]
+    loader = DataLoader(SequenceDataset(examples), batch_size=1, shuffle=False, collate_fn=lambda b: collate_token_sequences(b, pad_token_id=0))
+    run_training(
+        model=model,
+        train_loader=loader,
+        eval_loader=loader,
+        optimizer=None,
+        num_epochs=1,
+        max_steps=3,
+        eval_interval_steps=0,
+        eval_enabled=True,
+        log_interval_steps=2,
+    )
+    captured = capsys.readouterr().out
+    train_lines = [line for line in captured.splitlines() if line.startswith("[train]")]
+    assert len(train_lines) >= 2
+    assert any("loss=" in line and "tokens=" in line and "elapsed=" in line for line in train_lines)
+
+
 def test_multi_seed_summary_includes_aggregate_metrics_and_artifacts(tmp_path: Path) -> None:
     cfg = _tiny_config(tmp_path, name="tiny.json")
     subprocess.run(
