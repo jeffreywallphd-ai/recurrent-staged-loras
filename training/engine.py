@@ -24,6 +24,8 @@ import torch
 from torch.utils.data import DataLoader
 from functools import partial
 
+
+
 from data.dataset import build_external_eval_dataset, build_train_eval_datasets, collate_token_sequences
 from models.staged_model import StagedLatentAdaptationModel
 from training.config_loader import RuntimeConfig, build_model_from_variant
@@ -72,6 +74,12 @@ def _set_seed(seed: int, deterministic: bool) -> None:
 def _count_trainable_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
+def _collect_trainable_parameter_names(model: torch.nn.Module) -> list[str]:
+    return [
+        name
+        for name, param in model.named_parameters()
+        if param.requires_grad
+    ]
 
 def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
@@ -149,9 +157,12 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
         Raises ValueError on invalid external dataset specs or missing tokenizer.
     """
     _set_seed(runtime.training.seed, runtime.training.deterministic)
-    model = build_model_from_variant(runtime.variant)
-    model.train()
+    model = None
+   
+    #model = build_model_from_variant(runtime.variant)
+    #model.train()
 
+    
     dataset_name = str(runtime.dataset["name"]).strip().lower()
     external_names = [str(item.get("name", "")).strip().lower() for item in runtime.dataset.get("external_evaluations", []) if isinstance(item, dict)]
     # Tokenizer-backed datasets require text decoding for answer-span scoring and
@@ -176,9 +187,17 @@ def build_training_components(runtime: RuntimeConfig) -> TrainingComponents:
     bundle = build_train_eval_datasets(
         name=dataset_name,
         settings=dataset_settings,
-        vocab_size=model.base_model.vocab_size,
+        vocab_size=10000,
         tokenizer=tokenizer,
     )
+
+    model = build_model_from_variant(runtime.variant)
+    initial_trainable_weights = {
+    name: p.detach().cpu().clone()
+    for name, p in model.named_parameters()
+    if p.requires_grad
+}
+    model.train()
 
     pad_token_id = 0
     if tokenizer is not None:
@@ -262,6 +281,12 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         else:
             raise ValueError(f"Unsupported compute control mode '{compute.mode}'")
 
+    initial_trainable_weights = {
+    name: p.detach().cpu().clone()
+    for name, p in components.model.named_parameters()
+    if p.requires_grad
+}
+    
     training_summary = run_training(
         model=components.model,
         train_loader=components.train_loader,
@@ -276,8 +301,29 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         max_wall_time_seconds=max_wall_time_seconds,
     )
 
+    weight_change_summary = {}
+
+    for name, p in components.model.named_parameters():
+        if p.requires_grad:
+            delta = (
+               p.detach().cpu()
+               - initial_trainable_weights[name]
+            ).abs().mean().item()
+
+            weight_change_summary[name] = delta
+
     checkpoint_path = out_dir / "checkpoint.pt"
-    torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
+    # torch.save({"step": int(training_summary["global_steps"]), "model_state_dict": components.model.state_dict()}, checkpoint_path)
+    try:
+        torch.save(
+           {
+              "step": int(training_summary["global_steps"]),
+              "model_state_dict": components.model.state_dict()
+           },
+           checkpoint_path
+           )
+    except Exception as e:
+        print("[warn] checkpoint save skipped:", e)
 
     total_params = _count_total_params(components.model)
     # These outcomes are required for confirmatory/report tables; fail fast when
@@ -312,6 +358,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "best_eval_loss": float(training_summary["best_eval_loss"]),
         "eval_perplexity": float(training_summary["eval_perplexity"]),
         "train_perplexity": float(training_summary["train_perplexity"]),
+        "train_loss_history": training_summary.get("train_loss_history", []),
+        "eval_loss_history": training_summary.get("eval_loss_history", []),
         "wall_time_seconds_total": float(training_summary["wall_time_seconds_total"]),
         "wall_time_seconds_train": float(training_summary["wall_time_seconds_train"]),
         "wall_time_seconds_eval": float(training_summary["wall_time_seconds_eval"]),
@@ -376,6 +424,8 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "answer_eval_answer_length_histogram": training_summary.get("answer_eval_answer_length_histogram", {}),
         "ablation_recurrent_steps": runtime.raw.get("ablation", {}).get("recurrent_steps") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
         "ablation_lora_rank": runtime.raw.get("ablation", {}).get("lora_rank") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
+        "trainable_parameter_names": _collect_trainable_parameter_names(components.model),
+        "weight_change_summary": weight_change_summary,
     }
 
     required_dataset_identity_fields = [

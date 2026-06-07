@@ -39,23 +39,156 @@ class SequenceDataset(Dataset[Example]):
         return self._examples[idx]
 
 
+def _strip_final_answer_lines(text: str) -> str:
+    """Remove duplicated final-answer text from reasoning."""
+    text = re.sub(
+        r"\s*\.?\s*(The answer is|Answer:|Final Answer:)\s*:?\s*.*$",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+
+    lines = text.splitlines()
+    cleaned: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+
+        if lower.startswith("the answer is"):
+            continue
+        if lower.startswith("answer:"):
+            continue
+        if lower.startswith("final answer:"):
+            continue
+
+        cleaned.append(line)
+
+    return "\n".join(cleaned).strip()
+
+
+def _extract_last_boxed_value(text: str) -> str | None:
+    """Extract the last \\boxed{...} value, including simple nested braces."""
+    marker = r"\boxed{"
+    start = text.rfind(marker)
+
+    if start < 0:
+        return None
+
+    i = start + len(marker)
+    depth = 1
+    chars: list[str] = []
+
+    while i < len(text):
+        ch = text[i]
+
+        if ch == "{":
+            depth += 1
+            chars.append(ch)
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(chars).strip()
+            chars.append(ch)
+        else:
+            chars.append(ch)
+
+        i += 1
+
+    return None
+
+
+def _replace_boxed_expressions(text: str) -> str:
+    """Keep reasoning complete by replacing \\boxed{...} with its inner value."""
+    output: list[str] = []
+    i = 0
+    marker = r"\boxed{"
+
+    while i < len(text):
+        start = text.find(marker, i)
+
+        if start < 0:
+            output.append(text[i:])
+            break
+
+        output.append(text[i:start])
+
+        j = start + len(marker)
+        depth = 1
+        chars: list[str] = []
+
+        while j < len(text):
+            ch = text[j]
+
+            if ch == "{":
+                depth += 1
+                chars.append(ch)
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    output.append("".join(chars).strip())
+                    j += 1
+                    break
+                chars.append(ch)
+            else:
+                chars.append(ch)
+
+            j += 1
+
+        if depth != 0:
+            # Malformed boxed expression; keep original remaining text.
+            output.append(text[start:])
+            break
+
+        i = j
+
+    return "".join(output)
+
+
 def _extract_reasoning_and_answer(response: str) -> tuple[str, str]:
+    """Extract semantically complete reasoning and clean final answer.
+
+    Stage 2 should remain a complete reasoning trace. Boxed answers are
+    extracted as answers but not used as the reasoning cut point.
+    """
+    response = response.strip()
+
+    if not response:
+        return "", ""
+
     if "####" in response:
-        reasoning, answer = response.rsplit("####", 1)
+        reasoning, answer_block = response.rsplit("####", 1)
+
+        answer_lines = answer_block.strip().splitlines()
+        answer = answer_lines[0].strip() if answer_lines else answer_block.strip()
+
+        reasoning = _strip_final_answer_lines(reasoning)
+        reasoning = _replace_boxed_expressions(reasoning)
+
         return reasoning.strip(), answer.strip()
-    boxed = re.findall(r"\\boxed\{([^}]*)\}", response)
-    if boxed:
-        answer = boxed[-1].strip()
-        anchor = response.rfind("\\boxed")
-        reasoning = response[:anchor].strip() if anchor >= 0 else response.strip()
-        return reasoning, answer
+
+    boxed_answer = _extract_last_boxed_value(response)
+
+    if boxed_answer:
+        reasoning = _strip_final_answer_lines(response)
+        reasoning = _replace_boxed_expressions(reasoning)
+
+        return reasoning.strip(), boxed_answer.strip()
+
     lower = response.lower()
     marker = "the answer is"
+
     if marker in lower:
         idx = lower.rfind(marker)
-        trailing = response[idx + len(marker) :].strip(" :.\n\t")
-        return response[:idx].strip(), trailing
-    return response.strip(), ""
+        reasoning = response[:idx].strip()
+        trailing = response[idx + len(marker):].strip(" :.\n\t")
+
+        reasoning = _strip_final_answer_lines(reasoning)
+        reasoning = _replace_boxed_expressions(reasoning)
+
+        return reasoning.strip(), trailing.strip()
+
+    return _replace_boxed_expressions(response).strip(), ""
 
 
 def _build_staged_text(

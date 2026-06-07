@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
 from typing import Any
+#from xml.parsers.expat import model
 
+#from accelerate import optimizer
+#from accelerate import optimizer
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -95,10 +98,18 @@ def loss_for_batch(model: StagedLatentAdaptationModel, batch: dict[str, torch.Te
     For recurrent models, per-step logits are aligned to stage masks (stage1-3)
     so each recurrence step is supervised on its intended stage target.
     """
+    device = next(model.parameters()).device
+
+    batch = {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        for k, v in batch.items()
+    }
+
     input_ids = batch["input_ids"]
     attention_mask = batch["attention_mask"]
     assert isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)
     out = model(input_ids=input_ids, attention_mask=attention_mask)
+
     labels = batch["labels"][:, 1:]
     assert isinstance(labels, torch.Tensor)
 
@@ -164,6 +175,13 @@ def train_epoch(
         if optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            
+
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=1.0
+            )
+
             optimizer.step()
         step += 1
         wall += perf_counter() - start
@@ -181,7 +199,9 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
     Failure modes:
         Assumes masks and labels are present with expected keys/shapes.
     """
-    model.eval()
+    was_training = model.training
+    if was_training:
+      model.eval()
     start = perf_counter()
     losses: list[float] = []
     tokens_seen = 0
@@ -218,12 +238,20 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
 
     with torch.no_grad():
         for batch in dataloader:
+            device = next(model.parameters()).device
+
+            batch = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+
             input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
             labels = batch["labels"][:, 1:]
             stage2_mask = batch["stage2_mask"][:, 1:]
             stage3_mask = batch["stage3_mask"][:, 1:]
             answer_mask = batch["answer_mask"][:, 1:]
+
             assert isinstance(input_ids, torch.Tensor)
             assert isinstance(attention_mask, torch.Tensor)
             assert isinstance(labels, torch.Tensor)
@@ -231,11 +259,34 @@ def evaluate(*, model: StagedLatentAdaptationModel, dataloader: DataLoader[dict[
             assert isinstance(stage3_mask, torch.Tensor)
             assert isinstance(answer_mask, torch.Tensor)
 
-            out = model(input_ids=input_ids, attention_mask=attention_mask)
+            out = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
             logits = out.logits[:, :-1, :]
             pred = logits.argmax(dim=-1)
 
-            losses.append(float(F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1)).item()))
+            #losses.append(float(F.cross_entropy(logits.reshape(-1, logits.shape[-1]), labels.reshape(-1)).item()))
+
+            eval_loss = F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            labels.reshape(-1)
+            )
+
+            if torch.isnan(eval_loss) or torch.isinf(eval_loss):
+                print("[nan-debug] eval loss invalid")
+                print("[nan-debug] logits has nan:", torch.isnan(logits).any().item())
+                print("[nan-debug] logits has inf:", torch.isinf(logits).any().item())
+                print("[nan-debug] logits min:", logits.nan_to_num().min().item())
+                print("[nan-debug] logits max:", logits.nan_to_num().max().item())
+                print("[nan-debug] labels min:", labels.min().item())
+                print("[nan-debug] labels max:", labels.max().item())
+                print("[nan-debug] input_ids min:", input_ids.min().item())
+                print("[nan-debug] input_ids max:", input_ids.max().item())
+
+            losses.append(float(eval_loss.item()))
+
+
             tokens_seen += int(labels.ne(-100).sum().item())
 
             if int(stage2_mask.sum().item()) > 0:
@@ -406,6 +457,8 @@ def run_training(
     wall_train = 0.0
     eval_results: list[EvalResult] = []
 
+    train_loss_history: list[float] = []
+    eval_loss_history: list[float] = []
     for _ in range(num_epochs):
         train_loss, done, wall, tokens, interval_evals = train_epoch(
             model=model,
@@ -425,6 +478,12 @@ def run_training(
         wall_train += wall
         epochs_completed += 1
         eval_results.extend(interval_evals)
+
+        train_loss_history.append(float(train_loss))
+
+        for ev in interval_evals:
+             eval_loss_history.append(float(ev.loss))
+
         if global_steps >= max_steps:
             break
         if max_train_tokens is not None and tokens_train >= max_train_tokens:
@@ -462,6 +521,8 @@ def run_training(
         "steps_per_second": float(global_steps / wall_train) if wall_train > 0 else 0.0,
         "eval_perplexity": _safe_perplexity(last_eval.loss),
         "train_perplexity": _safe_perplexity(train_loss),
+        "train_loss_history": train_loss_history,
+        "eval_loss_history": eval_loss_history,
         "stage_2_token_accuracy": last_eval.stage_2_token_accuracy,
         "stage_3_token_accuracy": last_eval.stage_3_token_accuracy,
         "final_answer_accuracy": last_eval.final_answer_accuracy,
@@ -494,5 +555,5 @@ def run_training(
         "answer_eval_symbolic_match_count": int(last_eval.answer_eval_symbolic_match_count),
         "answer_eval_numeric_abs_tolerance": float(NUMERIC_ABS_TOL),
         "answer_eval_numeric_multi_value_rule": NUMERIC_MULTI_VALUE_RULE,
-        "answer_eval_answer_length_histogram": dict(last_eval.answer_eval_length_histogram),
+        "answer_eval_answer_length_histogram": dict(last_eval.answer_eval_length_histogram),  
     }
