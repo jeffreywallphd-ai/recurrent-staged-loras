@@ -153,6 +153,39 @@ A debug training run completed successfully after the modifications, indicating 
 
 ---
 
+## Additional Observation: Conclusion Statements in Stage 2
+
+During further inspection of MetaMathQA samples, a recurring pattern was observed where Stage 2 reasoning ends with explicit conclusion statements such as:
+
+* "The value of x is 3."
+* "The value of X is 1."
+* "Therefore, the number of homes without a fireplace is 240."
+* "So, the value of (3A + 2B)/(4C - A) is 4/7."
+
+These statements are not extraction errors and are part of the original reasoning traces. However, some examples effectively restate the final answer immediately before Stage 3.
+
+For example:
+
+```text
+x = 3
+The value of x is 3.
+
+Final Answer:
+3
+```
+
+This creates a small amount of answer duplication between Stage 2 and Stage 3.
+
+At present, these conclusion statements are retained because they form part of the natural reasoning process and removing them could reduce the coherence of the reasoning trace.
+
+A possible future experiment would be to compare:
+
+1. The current splitter, which preserves conclusion statements in Stage 2.
+2. A stricter splitter that removes answer-restatement sentences while preserving derivation steps.
+
+This would allow evaluation of whether cleaner separation between reasoning and final answers improves staged supervision performance.
+
+
 ## Conclusion
 
 The updated splitter produces more semantically coherent Stage 2 reasoning traces while preserving clean Stage 3 answer targets. The modifications improve supervision quality for staged reasoning experiments and address several common failure modes observed in the original implementation.
