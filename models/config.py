@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-RecurrenceMode = Literal["none", "latent_only", "shared", "stage_specialized"]
+RecurrenceMode = Literal["none", "latent_only", "shared", "stage_specialized", "stage_lora_only"]
 AdapterSharing = Literal["none", "shared", "per_step"]
 ArchitectureType = Literal["dense", "moe"]
 
@@ -48,6 +48,7 @@ class RefinerConfig:
     hidden_size: int = 0
     recurrence_mode: RecurrenceMode = "none"
     adapter_sharing: AdapterSharing = "none"
+    step_scale: float = 0.5
 
 
 @dataclass(slots=True)
@@ -73,6 +74,8 @@ class VariantConfig:
             return
         if self.refiner.num_steps < 1:
             raise ValueError("refiner.num_steps must be >= 1 when enabled")
+        if self.refiner.step_scale < 0:
+            raise ValueError("refiner.step_scale must be >= 0")
         if self.refiner.recurrence_mode == "none":
             raise ValueError("enabled refiner requires non-'none' recurrence_mode")
         if self.refiner.recurrence_mode == "latent_only":
@@ -84,6 +87,13 @@ class VariantConfig:
             raise ValueError("shared recurrence mode requires adapter_sharing='shared'")
         if self.refiner.recurrence_mode == "stage_specialized" and self.refiner.adapter_sharing != "per_step":
             raise ValueError("stage_specialized recurrence mode requires adapter_sharing='per_step'")
+        if self.refiner.recurrence_mode == "stage_lora_only" and self.refiner.adapter_sharing != "per_step":
+            raise ValueError("stage_lora_only recurrence mode requires adapter_sharing='per_step'")
+        if self.refiner.recurrence_mode == "stage_lora_only":
+           if self.refiner.adapter_sharing != "per_step":
+                raise ValueError("stage_lora_only requires adapter_sharing='per_step'")
+           if not self.refiner_adapter.enabled:
+                raise ValueError("stage_lora_only requires refiner adapter enabled")
 
 
 def _parse_adapter_config(raw: dict[str, Any] | None) -> AdapterConfig:
@@ -123,6 +133,7 @@ def parse_variant_config(raw: dict[str, Any]) -> VariantConfig:
             hidden_size=int(ref_raw.get("hidden_size", 0)),
             recurrence_mode=str(ref_raw.get("recurrence_mode", "none")),
             adapter_sharing=str(ref_raw.get("adapter_sharing", "none")),
+            step_scale=float(ref_raw.get("step_scale", 0.5)),
         ),
         refiner_adapter=_parse_adapter_config(ref_raw.get("adapter")),
         trainable_modules=list(model.get("trainable_modules", [])),

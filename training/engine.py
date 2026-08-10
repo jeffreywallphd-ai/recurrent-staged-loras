@@ -85,6 +85,85 @@ def _count_total_params(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
 
 
+def _load_offline_distillation_targets(
+    runtime: RuntimeConfig,
+) -> tuple[dict[str, dict[str, Any]] | None, dict[str, Any]]:
+    """Load an optional offline teacher-target cache from the training config."""
+    training_raw = runtime.raw.get("training", {})
+    if not isinstance(training_raw, dict):
+        raise ValueError("training configuration must be a mapping")
+
+    nested = training_raw.get("distillation", {})
+    if nested is None:
+        nested = {}
+    if not isinstance(nested, dict):
+        raise ValueError("training.distillation must be a mapping when provided")
+
+    enabled = bool(
+        nested.get(
+            "enabled",
+            training_raw.get("distillation_enabled", False),
+        )
+    )
+    weight = float(
+        nested.get(
+            "weight",
+            training_raw.get("distillation_weight", 0.0),
+        )
+    )
+    loss_type = str(
+        nested.get(
+            "loss_type",
+            training_raw.get("distillation_loss_type", "mse"),
+        )
+    ).strip().lower()
+    cache_value = nested.get(
+        "cache_path",
+        training_raw.get("distillation_cache_path"),
+    )
+
+    if loss_type not in {"mse", "cosine"}:
+        raise ValueError(
+            "training.distillation.loss_type must be either 'mse' or 'cosine'"
+        )
+
+    settings: dict[str, Any] = {
+        "enabled": enabled,
+        "weight": weight,
+        "loss_type": loss_type,
+        "cache_path": str(cache_value) if cache_value else None,
+        "cached_examples": 0,
+        "teacher_checkpoint_step": None,
+        "answer_tokens_cached": None,
+    }
+
+    if not enabled:
+        return None, settings
+    if weight <= 0.0:
+        raise ValueError("Distillation is enabled but weight must be positive")
+    if not cache_value:
+        raise ValueError("Distillation is enabled but no cache path is configured")
+
+    cache_path = Path(str(cache_value))
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Distillation cache does not exist: {cache_path}")
+
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError("Distillation cache payload must be a mapping")
+
+    targets = payload.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        raise ValueError("Distillation cache must contain a non-empty 'targets' mapping")
+
+    settings.update({
+        "cached_examples": int(payload.get("examples_cached", len(targets))),
+        "teacher_checkpoint_step": payload.get("teacher_checkpoint_step"),
+        "answer_tokens_cached": payload.get("answer_tokens_cached"),
+    })
+    return targets, settings
+
+
 REQUIRED_STUDY_METRICS = [
     "final_answer_accuracy",
     "final_answer_exact_match",
@@ -130,6 +209,7 @@ def _to_metrics_payload(eval_result: Any) -> dict[str, Any]:
         "symbolic_answer_accuracy": eval_result.symbolic_answer_accuracy,
         "answer_eval_string_count": int(eval_result.answer_eval_string_count),
         "answer_eval_numeric_count": int(eval_result.answer_eval_numeric_count),
+        "answer_eval_failures": eval_result.answer_eval_failures,
     }
 
 
@@ -286,7 +366,35 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     for name, p in components.model.named_parameters()
     if p.requires_grad
 }
+    warmup_steps = int(runtime.raw.get("training", {}).get("warmup_steps", 0))
+    gradient_accumulation_steps = int(runtime.raw.get("training", {}).get("gradient_accumulation_steps", 1))
+    lr_scheduler = None
+
+    if components.optimizer is not None and warmup_steps > 0:
+        def lr_lambda(current_step: int) -> float:
+            if current_step < warmup_steps:
+                return float(current_step + 1) / float(max(1, warmup_steps))
+            return 1.0
+
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            components.optimizer,
+            lr_lambda,
+        )
     
+
+    distillation_targets, distillation_settings = _load_offline_distillation_targets(runtime)
+    distillation_weight = float(distillation_settings["weight"])
+    distillation_loss_type = str(distillation_settings["loss_type"])
+
+    if distillation_settings["enabled"]:
+        print(
+            "[distillation] loaded "
+            f"{distillation_settings['cached_examples']} cached teacher targets "
+            f"from {distillation_settings['cache_path']} "
+            f"with weight={distillation_weight} "
+            f"loss_type={distillation_loss_type}"
+        )
+
     training_summary = run_training(
         model=components.model,
         train_loader=components.train_loader,
@@ -294,11 +402,16 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         optimizer=components.optimizer,
         num_epochs=runtime.training.num_epochs,
         max_steps=adjusted_max_steps,
+        lr_scheduler=lr_scheduler,
         eval_interval_steps=runtime.training.eval_interval_steps,
         eval_enabled=runtime.training.eval_enabled,
         tokenizer=components.tokenizer,
         max_train_tokens=max_train_tokens,
         max_wall_time_seconds=max_wall_time_seconds,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        distillation_targets=distillation_targets,
+        distillation_weight=distillation_weight,
+        distillation_loss_type=distillation_loss_type,
     )
 
     weight_change_summary = {}
@@ -336,6 +449,35 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
     tokens_per_optimizer_step = (float(tokens_seen_train) / float(effective_optimizer_steps)) if effective_optimizer_steps > 0 else 0.0
 
     metrics = {
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "warmup_steps": warmup_steps,
+        "distillation_enabled": bool(distillation_settings["enabled"]),
+        "distillation_weight": distillation_weight,
+        "distillation_loss_type": distillation_loss_type,
+        "distillation_cache_path": distillation_settings["cache_path"],
+        "distillation_cached_examples": int(distillation_settings["cached_examples"]),
+        "distillation_teacher_checkpoint_step": distillation_settings["teacher_checkpoint_step"],
+        "distillation_answer_tokens_cached": distillation_settings["answer_tokens_cached"],
+        "distillation_lookups": int(training_summary.get("distillation_lookups", 0)),
+        "distillation_matches": int(training_summary.get("distillation_matches", 0)),
+        "distillation_misses": int(training_summary.get("distillation_misses", 0)),
+        "distillation_invalid_targets": int(
+            training_summary.get("distillation_invalid_targets", 0)
+        ),
+        "distillation_matched_answer_tokens": int(
+            training_summary.get("distillation_matched_answer_tokens", 0)
+        ),
+        "distillation_match_rate": float(
+            training_summary.get("distillation_match_rate", 0.0)
+        ),
+        "distillation_mean_hidden_loss": training_summary.get(
+            "distillation_mean_hidden_loss"
+        ),
+        # Backward-compatible field. It is populated only for MSE runs
+        # by the corrected training loop.
+        "distillation_mean_hidden_mse": training_summary.get(
+            "distillation_mean_hidden_mse"
+        ),
         "run_name": run_name,
         "config_name": config_name,
         "baseline_name": runtime.baseline,
@@ -422,6 +564,7 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "answer_eval_numeric_abs_tolerance": float(training_summary.get("answer_eval_numeric_abs_tolerance", 0.0)),
         "answer_eval_numeric_multi_value_rule": training_summary.get("answer_eval_numeric_multi_value_rule", "strict_set"),
         "answer_eval_answer_length_histogram": training_summary.get("answer_eval_answer_length_histogram", {}),
+        "answer_eval_failures": training_summary.get("answer_eval_failures", []),
         "ablation_recurrent_steps": runtime.raw.get("ablation", {}).get("recurrent_steps") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
         "ablation_lora_rank": runtime.raw.get("ablation", {}).get("lora_rank") if isinstance(runtime.raw.get("ablation", {}), dict) else None,
         "trainable_parameter_names": _collect_trainable_parameter_names(components.model),
@@ -491,11 +634,17 @@ def run_training_loop(*, components: TrainingComponents, run_name: str, config_n
         "symbolic_match_count": metrics["answer_eval_symbolic_match_count"],
         "symbolic_answer_accuracy": metrics["symbolic_answer_accuracy"],
         "numeric_multi_value_rule": metrics["answer_eval_numeric_multi_value_rule"],
+        "sample_failures": metrics.get("answer_eval_failures", []),
         "notes": "Answer metrics decode only tokens in answer_mask/final_answer_mask (answer span, excluding the literal 'Final Answer:' header). stage_3_token_accuracy still uses the full stage3_mask section. Symbolic equivalence is attempted only for expression-like answers; parse failures are counted explicitly.",
+       
     }
     if external_eval_metrics:
         answer_eval_diagnostics["external_eval"] = external_eval_metrics
     (out_dir / "answer_eval_diagnostics.json").write_text(json.dumps(answer_eval_diagnostics, indent=2), encoding="utf-8")
+    (out_dir / "answer_eval_failures.json").write_text(
+        json.dumps(metrics.get("answer_eval_failures", []), indent=2),
+        encoding="utf-8",
+    )
 
     return TrainResult(
         final_train_loss=metrics["final_train_loss"],

@@ -1,2 +1,9 @@
 __pycache__/
 *.py[cod]
+
+# Generated experiment outputs and caches
+outputs/
+.cache/
+
+# Local backup files
+training/*_before_cosine.py

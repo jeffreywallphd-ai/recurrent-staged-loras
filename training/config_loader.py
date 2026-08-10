@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 import json
 
+from models.stage_lora_only import StageLoRAOnlyAdapter
 from models.config import VariantConfig, parse_variant_config
 from models.frozen_base import FrozenBaseCausalLM
 from models.lora_bank import StepAwareLoRABank
@@ -212,6 +213,7 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
     if variant.refiner.enabled:
         hidden_size = variant.refiner.hidden_size or base_model.hidden_size
         adapter_bank = None
+
         if variant.refiner_adapter.enabled:
             adapter_bank = StepAwareLoRABank(
                 num_steps=variant.refiner.num_steps,
@@ -223,14 +225,21 @@ def build_model_from_variant(variant: VariantConfig) -> StagedLatentAdaptationMo
                 dropout=variant.refiner_adapter.dropout,
             )
 
-        refiner = RecurrentLatentRefiner(
-            num_steps=variant.refiner.num_steps,
-            hidden_size=hidden_size,
-            adapter_bank=adapter_bank,
-        )
+        if variant.refiner.recurrence_mode == "stage_lora_only":
+            if adapter_bank is None:
+                raise ValueError("stage_lora_only requires latent_refiner.adapter.enabled=true")
+            refiner = StageLoRAOnlyAdapter(adapter_bank=adapter_bank)
+        else:
+            refiner = RecurrentLatentRefiner(
+                num_steps=variant.refiner.num_steps,
+                hidden_size=hidden_size,
+                adapter_bank=adapter_bank,
+                step_scale=variant.refiner.step_scale,
+            )
+
         # HF backbones frequently emit bf16/fp16 hidden states while newly
-        # constructed recurrent modules default to fp32; align once at build time
-        # so recurrent matmuls do not hit dtype/device mismatch errors.
+        # constructed modules default to fp32; align once at build time so
+        # adapter/refiner matmuls do not hit dtype/device mismatch errors.
         runtime_dtype, runtime_device = base_model.runtime_dtype_device()
         refiner = refiner.to(device=runtime_device, dtype=runtime_dtype)
 

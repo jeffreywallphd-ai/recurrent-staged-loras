@@ -30,6 +30,7 @@ class RecurrentLatentRefiner(nn.Module):
         num_steps: int,
         hidden_size: int,
         adapter_bank: StepAwareLoRABank | None = None,
+        step_scale: float = 0.1,
     ) -> None:
         super().__init__()
         self.num_steps = num_steps
@@ -39,7 +40,7 @@ class RecurrentLatentRefiner(nn.Module):
         self.w_in = nn.Linear(hidden_size, hidden_size)
         self.w_out = nn.Linear(hidden_size, hidden_size)
         self.activation = nn.Tanh()
-        self.step_scale = 0.5
+        self.step_scale = float(step_scale)
         self._runtime_aligned = False
 
     def align_to_hidden_states(self, hidden_states: torch.Tensor) -> None:
